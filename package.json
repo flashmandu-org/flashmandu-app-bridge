@@ -1,0 +1,59 @@
+{
+  "name": "@flashmandu/app-bridge",
+  "version": "0.1.0",
+  "description": "In-iframe App Bridge SDK for Flashmandu embedded apps. Drives the embedded app from inside the platform's iframe via postMessage.",
+  "license": "proprietary",
+  "author": "Flashmandu <engineering@flashmandu.com>",
+  "homepage": "https://github.com/flashmandu-org/flashmandu-app-bridge",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/flashmandu-org/flashmandu-app-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/flashmandu-org/flashmandu-app-bridge/issues"
+  },
+  "keywords": [
+    "flashmandu",
+    "app-bridge",
+    "embedded-app",
+    "iframe",
+    "postmessage",
+    "storefront-apps"
+  ],
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "browser": "./dist/index.js",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm,cjs --dts --clean",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "tsup": "^8.3.0",
+    "typescript": "^5.4.0",
+    "vitest": "^2.1.0"
+  }
+}
