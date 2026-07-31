@@ -15,6 +15,7 @@ import {
     type ContextPayload,
     type RequestOptions,
     type ResponseResult,
+    type SidebarLink,
     type ToastVariant,
 } from './types.js';
 import { MessageType } from './types.js';
@@ -56,6 +57,8 @@ export interface AppBridge {
     navigate: (href: string) => void;
     /** Set the parent document's title. */
     setTitle: (title: string) => void;
+    /** Register sidebar navigation links the host should render. */
+    setSidebarLinks: (links: SidebarLink[]) => void;
     /** Proxy a read call through `/api/apps/proxy` (host-side auth). */
     request: (input: RequestOptions) => Promise<ResponseResult>;
     /** Subscribe to a bridge event. Returns an unsubscribe handle. */
@@ -186,6 +189,12 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
             transport.send({
                 type: MessageType.SetTitle,
                 payload: { title },
+            });
+        },
+        setSidebarLinks(links: SidebarLink[]): void {
+            transport.send({
+                type: MessageType.SetSidebarLinks,
+                payload: { links },
             });
         },
         request(input: RequestOptions): Promise<ResponseResult> {

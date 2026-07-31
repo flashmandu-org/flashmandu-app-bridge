@@ -32,6 +32,8 @@ export const MessageType = {
     Navigate: 'FLASHMANDU_BRIDGE:NAVIGATE',
     /** iframe → parent. Set the embed shell's document title. */
     SetTitle: 'FLASHMANDU_BRIDGE:SET_TITLE',
+    /** iframe → parent. Register sidebar navigation links for the app. */
+    SetSidebarLinks: 'FLASHMANDU_BRIDGE:SET_SIDEBAR_LINKS',
 } as const;
 
 export type MessageTypeValue = (typeof MessageType)[keyof typeof MessageType];
@@ -82,6 +84,21 @@ export interface NavigatePayload {
 /** SET_TITLE payload (iframe → parent). */
 export interface SetTitlePayload {
     title: string;
+}
+
+/** A single sidebar navigation link declared by the app. */
+export interface SidebarLink {
+    /** Display label shown in the sidebar. */
+    label: string;
+    /** Path within the app (e.g. `/maps`, `/maps/new`). */
+    path: string;
+    /** Optional icon name (Tabler icon or similar). */
+    icon?: string;
+}
+
+/** SET_SIDEBAR_LINKS payload (iframe → parent). */
+export interface SetSidebarLinksPayload {
+    links: SidebarLink[];
 }
 
 /** HTTP methods the proxy endpoint allows (see BridgeProxyController). */

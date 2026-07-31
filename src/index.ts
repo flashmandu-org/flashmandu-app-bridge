@@ -49,3 +49,19 @@ export {
     resolveParentOrigin,
 } from './transport.js';
 export type { Transport, TransportHandlers } from './transport.js';
+
+/**
+ * URL state — the single, framework-free place that decides which parts of an
+ * embedded app's URL belong in the host's address bar. Exported so the host
+ * shell and non-JS runtimes apply the identical rule.
+ */
+export {
+    BRIDGE_RESERVED_PARAMS,
+    EPHEMERAL_PARAM_PREFIX,
+    isGlobalParam,
+    globalParamsOf,
+    normaliseAppPath,
+    buildPathChangePayload,
+    buildAppUrl,
+} from './url-state.js';
+export type { PathChangePayload } from './url-state.js';

@@ -1,6 +1,6 @@
 {
   "name": "@flashmandu/app-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "In-iframe App Bridge SDK for Flashmandu embedded apps. Drives the embedded app from inside the platform's iframe via postMessage.",
   "license": "proprietary",
   "author": "Flashmandu <engineering@flashmandu.com>",
@@ -32,7 +32,18 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
-    }
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "import": "./dist/react/index.js",
+      "require": "./dist/react/index.cjs"
+    },
+    "./next": {
+      "types": "./dist/next/index.d.ts",
+      "import": "./dist/next/index.js",
+      "require": "./dist/next/index.cjs"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
@@ -43,17 +54,34 @@
     "node": ">=18.17"
   },
   "scripts": {
-    "build": "tsup src/index.ts --format esm,cjs --dts --clean",
+    "build": "tsup",
     "clean": "rm -rf dist",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepublishOnly": "npm run clean && npm run build"
+    "prepublishOnly": "npm run clean && npm run build && npm run verify:exports && npm run verify:framework-free",
+    "verify:exports": "node scripts/verify-exports.mjs",
+    "verify:framework-free": "node scripts/verify-framework-free.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
+    "@types/react": "^18.3.0",
+    "next": "^14.2.0",
+    "react": "^18.3.0",
     "tsup": "^8.3.0",
     "typescript": "^5.4.0",
     "vitest": "^2.1.0"
+  },
+  "peerDependencies": {
+    "next": ">=14",
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "next": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
   }
 }

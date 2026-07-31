@@ -184,3 +184,78 @@ describe('query-param + origin resolution helpers', () => {
         expect(readQueryParam('?app_id=app_1', 'app_id')).toBe('app_1');
     });
 });
+
+describe('allowedParentOrigins is an allowlist, not a fallback (SEC-1)', () => {
+    const ALLOW = ['https://shop.flashmandu.test'] as const;
+
+    it('rejects a parent_origin query param outside the allowlist', () => {
+        // The attack: frame the app with ?parent_origin=<attacker> and become
+        // the trusted parent. The allowlist must veto it.
+        expect(
+            resolveParentOrigin('?parent_origin=https://evil.test', ALLOW),
+        ).toBeNull();
+    });
+
+    it('honours a parent_origin query param inside the allowlist', () => {
+        expect(
+            resolveParentOrigin('?parent_origin=https://shop.flashmandu.test', ALLOW),
+        ).toBe('https://shop.flashmandu.test');
+    });
+
+    it('normalises the query param before matching', () => {
+        // A trailing slash or a full URL must not defeat the membership check.
+        expect(
+            resolveParentOrigin('?parent_origin=https://shop.flashmandu.test/', ALLOW),
+        ).toBe('https://shop.flashmandu.test');
+    });
+
+    it('falls back to a single declared origin when nothing is discoverable', () => {
+        expect(resolveParentOrigin('', ALLOW)).toBe('https://shop.flashmandu.test');
+    });
+
+    it('refuses to guess when the allowlist is ambiguous and nothing is discoverable', () => {
+        expect(
+            resolveParentOrigin('', ['https://a.test', 'https://b.test']),
+        ).toBeNull();
+    });
+
+    it('still resolves the discovered origin when no allowlist is configured', () => {
+        expect(resolveParentOrigin('?parent_origin=https://a.example'))
+            .toBe('https://a.example');
+    });
+
+    it('a rejected origin means the transport dispatches nothing', () => {
+        // Fail-closed end-to-end: null origin => no inbound, no outbound.
+        const origin = resolveParentOrigin('?parent_origin=https://evil.test', ALLOW);
+        expect(origin).toBeNull();
+
+        const onContext = vi.fn();
+        let listener: ((event: MessageEvent) => void) | undefined;
+        const parent = { postMessage: vi.fn() } as unknown as Window;
+
+        const transport = createTransport(
+            { onContext, onResponse: vi.fn() },
+            origin,
+            {
+                parent,
+                attach: (l) => {
+                    listener = l;
+                    return () => {};
+                },
+            },
+        );
+
+        listener?.({
+            source: parent,
+            origin: 'https://evil.test',
+            data: { type: 'FLASHMANDU_BRIDGE:CONTEXT', payload: { origin: 'https://evil.test' } },
+        } as unknown as MessageEvent);
+
+        expect(onContext).not.toHaveBeenCalled();
+
+        transport.send({ type: 'FLASHMANDU_BRIDGE:READY' } as never);
+        expect(parent.postMessage).not.toHaveBeenCalled();
+
+        transport.destroy();
+    });
+});

@@ -6,10 +6,16 @@
  * REQUEST messages get a monotonic id so the higher layer can await the
  * matching RESPONSE by id.
  *
- * Origin resolution order (first non-empty wins):
- *   1. `parent_origin` query param (signed/published by the embed shell).
- *   2. `document.referrer` origin (best-effort for non-standard embeds).
- *   3. The first entry of `allowedParentOrigins` (if provided).
+ * Origin resolution:
+ *   - Discovery is best-effort and UNAUTHENTICATED: the `parent_origin` query
+ *     param, then the `document.referrer` origin. Both are controllable by
+ *     whoever framed the app, so neither is trusted on its own.
+ *   - When `allowedParentOrigins` is configured it is the AUTHORITY: a
+ *     discovered origin is honoured only if it is a member, and a non-member
+ *     resolves to null. With no discovery at all and exactly one declared
+ *     origin, that origin is used (the ordinary first-load case).
+ *   - With no allowlist, the discovered origin is used as-is. Always configure
+ *     an allowlist in production.
  *
  * If no origin can be resolved, the transport still constructs but refuses to
  * dispatch inbound messages — the bridge will never become `ready`. This is
@@ -34,9 +40,44 @@ export function resolveParentOrigin(
     search: string,
     allowedOrigins?: readonly string[],
 ): string | null {
+    const hasAllowlist = allowedOrigins !== undefined && allowedOrigins.length > 0;
+
+    // Both discovery sources below are attacker-influenceable: `parent_origin`
+    // is a plain query param on our own URL, and `document.referrer` is set by
+    // whoever framed us. Neither is authenticated. When an allowlist is
+    // configured it is therefore the AUTHORITY: a discovered origin is only
+    // honoured if it is a member, and a miss resolves to null (fail-closed,
+    // the bridge never becomes ready) rather than silently falling back.
+    const candidate = discoverOrigin(search);
+
+    if (hasAllowlist) {
+        const allowed = allowedOrigins as readonly string[];
+        if (candidate !== null && allowed.includes(candidate)) {
+            return candidate;
+        }
+        // A configured allowlist with no usable discovery is the ordinary
+        // first-load case (no query param, referrer stripped by policy). Fall
+        // back to the single declared origin only when it is unambiguous.
+        if (candidate === null && allowed.length === 1) {
+            return allowed[0] ?? null;
+        }
+        return null;
+    }
+
+    return candidate;
+}
+
+/**
+ * Best-effort parent-origin discovery from the embed URL, then the referrer.
+ * Unauthenticated by construction — see the allowlist handling in
+ * {@link resolveParentOrigin}.
+ */
+function discoverOrigin(search: string): string | null {
     const fromQuery = readQueryParam(search, 'parent_origin');
     if (fromQuery !== null) {
-        return fromQuery;
+        // Normalise so an allowlist comparison is not defeated by a trailing
+        // slash or a cased scheme/host.
+        return originOf(fromQuery) ?? fromQuery;
     }
 
     if (typeof document !== 'undefined' && typeof document.referrer === 'string') {
@@ -44,10 +85,6 @@ export function resolveParentOrigin(
         if (refOrigin !== null) {
             return refOrigin;
         }
-    }
-
-    if (allowedOrigins !== undefined && allowedOrigins.length > 0) {
-        return allowedOrigins[0] ?? null;
     }
 
     return null;

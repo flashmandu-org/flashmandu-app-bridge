@@ -25,10 +25,11 @@
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": false,
 
+    "jsx": "react-jsx",
     "declaration": true,
     "sourceMap": false,
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts"],
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
   "exclude": ["node_modules", "dist", "src/__tests__/**/*"]
 }
