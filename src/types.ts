@@ -34,6 +34,8 @@ export const MessageType = {
     SetTitle: 'FLASHMANDU_BRIDGE:SET_TITLE',
     /** iframe → parent. Register sidebar navigation links for the app. */
     SetSidebarLinks: 'FLASHMANDU_BRIDGE:SET_SIDEBAR_LINKS',
+    /** parent → iframe. The merchant clicked one of the app's sidebar links. */
+    HostNavigate: 'FLASHMANDU_BRIDGE:HOST_NAVIGATE',
 } as const;
 
 export type MessageTypeValue = (typeof MessageType)[keyof typeof MessageType];
@@ -99,6 +101,12 @@ export interface SidebarLink {
 /** SET_SIDEBAR_LINKS payload (iframe → parent). */
 export interface SetSidebarLinksPayload {
     links: SidebarLink[];
+}
+
+/** HOST_NAVIGATE payload (parent → iframe). */
+export interface HostNavigatePayload {
+    /** App-relative path the merchant asked for, always leading-slashed. */
+    path: string;
 }
 
 /** HTTP methods the proxy endpoint allows (see BridgeProxyController). */

@@ -59,6 +59,8 @@ export interface AppBridge {
     setTitle: (title: string) => void;
     /** Register sidebar navigation links the host should render. */
     setSidebarLinks: (links: SidebarLink[]) => void;
+    /** Subscribe to host-driven navigation (merchant clicked a sidebar link). */
+    onHostNavigate: (listener: (path: string) => void) => () => void;
     /** Proxy a read call through `/api/apps/proxy` (host-side auth). */
     request: (input: RequestOptions) => Promise<ResponseResult>;
     /** Subscribe to a bridge event. Returns an unsubscribe handle. */
@@ -149,6 +151,36 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
         }
     }
 
+    const hostNavListeners = new Set<(path: string) => void>();
+
+    /**
+     * HOST_NAVIGATE arrives off the raw `window` rather than the transport: it
+     * is a plain hint, carries no session data, and must keep working while the
+     * app is still waiting for CONTEXT. The payload is therefore treated as
+     * fully untrusted — only an app-relative path is ever handed to a listener.
+     */
+    const onHostMessage = (event: MessageEvent): void => {
+        const data = event.data as { type?: string; payload?: { path?: unknown } } | null;
+        if (data?.type !== MessageType.HostNavigate) {
+            return;
+        }
+        const path = typeof data.payload?.path === 'string' ? data.payload.path : null;
+        if (path === null || !isAppRelativePath(path)) {
+            return;
+        }
+        for (const listener of hostNavListeners) {
+            try {
+                listener(path);
+            } catch {
+                // A listener throwing must not break the bridge.
+            }
+        }
+    };
+
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+        window.addEventListener('message', onHostMessage);
+    }
+
     // Fire READY immediately — the host responds with CONTEXT.
     sendReady();
 
@@ -197,6 +229,13 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
                 payload: { links },
             });
         },
+        onHostNavigate(listener: (path: string) => void): () => void {
+            hostNavListeners.add(listener);
+
+            return (): void => {
+                hostNavListeners.delete(listener);
+            };
+        },
         request(input: RequestOptions): Promise<ResponseResult> {
             if (destroyed) {
                 return Promise.reject(new Error('App bridge has been destroyed.'));
@@ -233,6 +272,10 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
                 return;
             }
             destroyed = true;
+            hostNavListeners.clear();
+            if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+                window.removeEventListener('message', onHostMessage);
+            }
             transport.destroy();
             for (const [, waiter] of pending) {
                 waiter.reject(new Error('App bridge has been destroyed.'));
@@ -244,6 +287,15 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
 }
 
 type BridgeEventKey = 'context' | 'ready' | 'destroy';
+
+/**
+ * True only for a path the app can safely route to itself. `//host` and `/\host`
+ * both start with a slash yet are read as protocol-relative URLs by browsers and
+ * by router `push()` calls, so they are rejected alongside absolute URLs.
+ */
+function isAppRelativePath(path: string): boolean {
+    return path.startsWith('/') && !path.startsWith('//') && !path.startsWith('/\\');
+}
 
 /** Used when there is no `window.parent` (e.g. SSR, top-level). Fail-safe. */
 function stubTransport(): Transport {
