@@ -105,8 +105,17 @@ export interface SetSidebarLinksPayload {
     links: SidebarLink[];
 }
 
-/** HOST_NAVIGATE payload (parent → iframe). */
+/**
+ * HOST_NAVIGATE payload (parent → iframe).
+ *
+ * `id` comes from the HOST's own counter — it is not related to the REQUEST
+ * sequence — and is echoed back in the ack so the host can tell two rapid
+ * navigations apart even when both name the same path. A message without a
+ * numeric `id` is malformed and is dropped.
+ */
 export interface HostNavigatePayload {
+    /** Host-allocated correlation id. Echoed verbatim in HOST_NAVIGATE_ACK. */
+    id: number;
     /** App-relative path the merchant asked for, always leading-slashed. */
     path: string;
 }
@@ -120,7 +129,9 @@ export interface HostNavigatePayload {
  * moved the address bar and the active highlight by then).
  */
 export interface HostNavigateAckPayload {
-    /** The accepted path, echoed back so the host can correlate it. */
+    /** The `id` from the HOST_NAVIGATE, echoed verbatim. The host matches on this. */
+    id: number;
+    /** The accepted path, echoed back for debugging. Not the correlation key. */
     path: string;
 }
 

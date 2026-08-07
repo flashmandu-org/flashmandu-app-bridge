@@ -162,7 +162,8 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
      * window could otherwise drive the app's router.
      *
      * The payload itself is untrusted regardless: only an app-relative path is
-     * ever handed to a listener.
+     * ever handed to a listener, and only a message carrying the host's numeric
+     * correlation `id` is considered well-formed at all.
      */
     const onHostMessage = (event: MessageEvent): void => {
         if (destroyed) {
@@ -176,10 +177,22 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
         if (parent === null || event.source !== parent) {
             return;
         }
-        const data = event.data as { type?: string; payload?: { path?: unknown } } | null;
+        const data = event.data as {
+            type?: string;
+            payload?: { id?: unknown; path?: unknown };
+        } | null;
         if (data?.type !== MessageType.HostNavigate) {
             return;
         }
+        // The host always numbers its navigations. A message without a usable
+        // id is malformed, and is dropped exactly like a bad origin: inventing
+        // an id here would hand the host an ack it cannot match, which is worse
+        // than the silence it already knows how to recover from.
+        const rawId: unknown = data.payload?.id;
+        if (typeof rawId !== 'number' || !Number.isFinite(rawId)) {
+            return;
+        }
+        const id: number = rawId;
         const path = typeof data.payload?.path === 'string' ? data.payload.path : null;
         if (path === null || !isAppRelativePath(path)) {
             return;
@@ -200,10 +213,13 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
                 // A listener throwing must not break the bridge.
             }
         }
-        // `transport.send` targets the resolved parent origin explicitly.
+        // `transport.send` targets the resolved parent origin explicitly. The
+        // id is echoed verbatim — it is the host's, allocated from the host's
+        // own counter, and is the only thing that distinguishes two rapid
+        // navigations to the same path.
         transport.send({
             type: MessageType.HostNavigateAck,
-            payload: { path },
+            payload: { id, path },
         });
     };
 

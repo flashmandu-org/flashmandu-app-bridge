@@ -30,6 +30,8 @@ export type {
     BridgeListener,
     BridgeMessage,
     ContextPayload,
+    HostNavigateAckPayload,
+    HostNavigatePayload,
     MessageTypeValue,
     NavigatePayload,
     ProxyMethod,
@@ -38,7 +40,9 @@ export type {
     ReadyPayload,
     RequestOptions,
     ResponseResult,
+    SetSidebarLinksPayload,
     SetTitlePayload,
+    SidebarLink,
     ToastPayload,
     ToastVariant,
 } from './types.js';

@@ -98,8 +98,8 @@ repo. Wire format is `{ type: string, payload?: ... }`.
 | iframe → parent  | `NAVIGATE`                      | `{ href }`                                                         |
 | iframe → parent  | `FLASHMANDU_BRIDGE:SET_TITLE`   | `{ title }`                                                        |
 | iframe → parent  | `FLASHMANDU_BRIDGE:SET_SIDEBAR_LINKS` | `{ links: [{ label, path, icon? }] }`                        |
-| parent → iframe  | `FLASHMANDU_BRIDGE:HOST_NAVIGATE` | `{ path }`                                                       |
-| iframe → parent  | `FLASHMANDU_BRIDGE:HOST_NAVIGATE_ACK` | `{ path }`                                                   |
+| parent → iframe  | `FLASHMANDU_BRIDGE:HOST_NAVIGATE` | `{ id, path }`                                                   |
+| iframe → parent  | `FLASHMANDU_BRIDGE:HOST_NAVIGATE_ACK` | `{ id, path }`                                               |
 
 ### Host-driven navigation and the ack
 
@@ -111,19 +111,34 @@ shows the old page, and because the URL already changed, clicking the same link
 again does nothing. The ack is the host's only evidence that the navigation
 actually happened; absence of one is its cue to recover.
 
+**The pair is correlated by `id`, not by path.** The host allocates the `id`
+from its own counter (it is unrelated to, and never drawn from, the
+REQUEST/RESPONSE sequence), and the SDK echoes it back verbatim in the ack. This
+is what lets the host distinguish two rapid navigations to the *same* path — a
+double-click, or link → back → same link — where a late ack for the first would
+otherwise be read as the ack for the second. `path` rides along in the ack for
+debugging; it is not the correlation key.
+
 The SDK posts `HOST_NAVIGATE_ACK` only when **all** of the following hold:
 
 1. The message came from the parent window on the resolved parent origin.
-2. `path` is a string and is app-relative — a leading `/`, but not `//` or `/\`,
+2. `id` is a finite number. A missing, `null`, string, `NaN` or `Infinity` id is
+   a malformed message and is dropped exactly like a bad origin — the SDK will
+   not invent an id, because an ack the host cannot match is worse than the
+   silence it already knows how to handle.
+3. `path` is a string and is app-relative — a leading `/`, but not `//` or `/\`,
    both of which browsers and routers resolve as off-site absolute URLs.
-3. **At least one `onHostNavigate` listener is registered**, and was invoked.
+4. **At least one `onHostNavigate` listener is registered**, and was invoked.
 
-Condition 3 is deliberate: an app that imported the SDK but never subscribed
+Condition 4 is deliberate: an app that imported the SDK but never subscribed
 must be distinguishable from one that routed successfully, so it gets silence.
 A listener that throws still acks — it received the path, and its own failure is
 not something the host can fix. The ack is sent once per accepted message,
 regardless of how many listeners are subscribed, and always targets the resolved
 parent origin.
+
+The listener itself receives only the `path`: the `id` is transport bookkeeping
+between the host and the SDK, and the app never has to handle it.
 
 > **Quirk.** The host uses the unprefixed `TOAST` and `NAVIGATE` tokens (not
 > `FLASHMANDU_BRIDGE:TOAST` / `:NAVIGATE`), and the TOAST/NAVIGATE payload
@@ -162,6 +177,17 @@ interface AppBridge {
   destroy(): void;
 }
 ```
+
+The host-navigation payload types are exported too, for hosts and for apps that
+assert on the wire format. Both carry the correlation `id`; the SDK echoes the
+one it was given:
+
+```ts
+interface HostNavigatePayload    { id: number; path: string }  // parent → iframe
+interface HostNavigateAckPayload { id: number; path: string }  // iframe → parent
+```
+
+`SidebarLink` and `SetSidebarLinksPayload` are exported alongside them.
 
 ## Developing the SDK
 

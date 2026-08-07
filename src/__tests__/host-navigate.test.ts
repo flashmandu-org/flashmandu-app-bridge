@@ -74,8 +74,14 @@ function dispatchMessage(init: { data: unknown; origin?: string; source?: unknow
     host.dispatchEvent(event);
 }
 
+/** Post a raw HOST_NAVIGATE payload, exactly as given. */
 function postHostNavigate(payload: unknown): void {
     dispatchMessage({ data: { type: MessageType.HostNavigate, payload } });
+}
+
+/** Post a well-formed HOST_NAVIGATE. The host always allocates the id. */
+function postNavigate(path: string, id = 1): void {
+    postHostNavigate({ id, path });
 }
 
 describe('onHostNavigate', () => {
@@ -84,7 +90,7 @@ describe('onHostNavigate', () => {
         const seen: string[] = [];
         bridge.onHostNavigate((path) => seen.push(path));
 
-        postHostNavigate({ path: '/members' });
+        postNavigate('/members');
 
         expect(seen).toEqual(['/members']);
     });
@@ -95,7 +101,7 @@ describe('onHostNavigate', () => {
         const off = bridge.onHostNavigate(listener);
         off();
 
-        postHostNavigate({ path: '/settings' });
+        postNavigate('/settings');
 
         expect(listener).not.toHaveBeenCalled();
     });
@@ -106,7 +112,7 @@ describe('onHostNavigate', () => {
         bridge.onHostNavigate(listener);
         bridge.destroy();
 
-        postHostNavigate({ path: '/settings' });
+        postNavigate('/settings');
 
         expect(listener).not.toHaveBeenCalled();
     });
@@ -117,7 +123,7 @@ describe('onHostNavigate', () => {
         bridge.onHostNavigate(listener);
 
         dispatchMessage({
-            data: { type: MessageType.HostNavigate, payload: { path: '/members' } },
+            data: { type: MessageType.HostNavigate, payload: { id: 1, path: '/members' } },
             origin: 'https://evil.example',
         });
 
@@ -130,7 +136,7 @@ describe('onHostNavigate', () => {
         bridge.onHostNavigate(listener);
 
         dispatchMessage({
-            data: { type: MessageType.HostNavigate, payload: { path: '/members' } },
+            data: { type: MessageType.HostNavigate, payload: { id: 1, path: '/members' } },
             source: new EventTarget(),
         });
 
@@ -145,7 +151,7 @@ describe('onHostNavigate', () => {
         const listener = vi.fn();
         bridge.onHostNavigate(listener);
 
-        postHostNavigate({ path: '/members' });
+        postNavigate('/members');
 
         expect(listener).not.toHaveBeenCalled();
     });
@@ -157,13 +163,31 @@ describe('onHostNavigate', () => {
 
         // Absolute URLs, protocol-relative URLs, scheme payloads, and
         // non-strings are all untrusted input arriving over postMessage.
-        postHostNavigate({ path: 'https://evil.example/members' });
-        postHostNavigate({ path: '//evil.example/members' });
-        postHostNavigate({ path: '/\\evil.example/members' });
-        postHostNavigate({ path: 'javascript:alert(1)' });
-        postHostNavigate({ path: 42 });
-        postHostNavigate({});
+        postHostNavigate({ id: 1, path: 'https://evil.example/members' });
+        postHostNavigate({ id: 1, path: '//evil.example/members' });
+        postHostNavigate({ id: 1, path: '/\\evil.example/members' });
+        postHostNavigate({ id: 1, path: 'javascript:alert(1)' });
+        postHostNavigate({ id: 1, path: 42 });
+        postHostNavigate({ id: 1 });
         postHostNavigate(undefined);
+
+        expect(listener).not.toHaveBeenCalled();
+    });
+
+    it('drops a HOST_NAVIGATE with a missing or non-numeric id', () => {
+        // The host is the only sender and always numbers its navigations, so a
+        // message without a usable id is malformed. Dropping it is the same
+        // fail-closed call as a bad origin — an ack the host cannot match is
+        // worse than the silence it already handles.
+        const bridge = makeBridge();
+        const listener = vi.fn();
+        bridge.onHostNavigate(listener);
+
+        postHostNavigate({ path: '/members' });
+        postHostNavigate({ id: null, path: '/members' });
+        postHostNavigate({ id: '1', path: '/members' });
+        postHostNavigate({ id: Number.NaN, path: '/members' });
+        postHostNavigate({ id: Number.POSITIVE_INFINITY, path: '/members' });
 
         expect(listener).not.toHaveBeenCalled();
     });
@@ -174,7 +198,7 @@ describe('onHostNavigate', () => {
         bridge.onHostNavigate(listener);
 
         dispatchMessage({
-            data: { type: MessageType.Context, payload: { path: '/members' } },
+            data: { type: MessageType.Context, payload: { id: 1, path: '/members' } },
         });
 
         expect(listener).not.toHaveBeenCalled();
@@ -187,20 +211,42 @@ describe('onHostNavigate', () => {
  * moves the active highlight BEFORE posting, so a dropped message leaves the
  * chrome lying about what the iframe is showing — and the pushState means
  * re-clicking the same link is a no-op. Silence therefore has to mean "did not
- * route", which makes the two negative cases below as load-bearing as the
- * positive one.
+ * route", which makes the negative cases below as load-bearing as the positive
+ * one.
+ *
+ * Correlation is by `id`, not by path: two rapid clicks on the same link are
+ * otherwise indistinguishable, and a late ack for the first would satisfy the
+ * second.
  */
 describe('HOST_NAVIGATE_ACK', () => {
     it('acks a navigate that reached a registered listener', () => {
         const bridge = makeBridge();
         bridge.onHostNavigate(() => {});
 
-        postHostNavigate({ path: '/members' });
+        postNavigate('/members', 7);
 
         expect(acks()).toEqual([{
-            data: { type: MessageType.HostNavigateAck, payload: { path: '/members' } },
+            data: {
+                type: MessageType.HostNavigateAck,
+                payload: { id: 7, path: '/members' },
+            },
             targetOrigin: PARENT_ORIGIN,
         }]);
+    });
+
+    it('echoes the host id verbatim rather than a counter of its own', () => {
+        // The id belongs to the host. Two navigations to the SAME path must be
+        // told apart by their ids alone — this is the whole point of the pair.
+        const bridge = makeBridge();
+        bridge.onHostNavigate(() => {});
+
+        postNavigate('/members', 41);
+        postNavigate('/members', 42);
+
+        expect(acks().map((m) => m.data.payload)).toEqual([
+            { id: 41, path: '/members' },
+            { id: 42, path: '/members' },
+        ]);
     });
 
     it('does not ack when the origin gate rejects the message', () => {
@@ -208,7 +254,7 @@ describe('HOST_NAVIGATE_ACK', () => {
         bridge.onHostNavigate(() => {});
 
         dispatchMessage({
-            data: { type: MessageType.HostNavigate, payload: { path: '/members' } },
+            data: { type: MessageType.HostNavigate, payload: { id: 1, path: '/members' } },
             origin: 'https://evil.example',
         });
 
@@ -220,7 +266,7 @@ describe('HOST_NAVIGATE_ACK', () => {
         // the host needs to detect, so a well-formed navigate still gets silence.
         makeBridge();
 
-        postHostNavigate({ path: '/members' });
+        postNavigate('/members');
 
         expect(acks()).toEqual([]);
     });
@@ -229,7 +275,18 @@ describe('HOST_NAVIGATE_ACK', () => {
         const bridge = makeBridge();
         bridge.onHostNavigate(() => {});
 
-        postHostNavigate({ path: '//evil.example/members' });
+        postNavigate('//evil.example/members');
+
+        expect(acks()).toEqual([]);
+    });
+
+    it('does not ack a message with a missing or non-numeric id', () => {
+        const bridge = makeBridge();
+        bridge.onHostNavigate(() => {});
+
+        postHostNavigate({ path: '/members' });
+        postHostNavigate({ id: '1', path: '/members' });
+        postHostNavigate({ id: Number.NaN, path: '/members' });
 
         expect(acks()).toEqual([]);
     });
@@ -239,7 +296,7 @@ describe('HOST_NAVIGATE_ACK', () => {
         bridge.onHostNavigate(() => {});
         bridge.onHostNavigate(() => {});
 
-        postHostNavigate({ path: '/members' });
+        postNavigate('/members');
 
         expect(acks()).toHaveLength(1);
     });
@@ -252,8 +309,29 @@ describe('HOST_NAVIGATE_ACK', () => {
             throw new Error('router blew up');
         });
 
-        postHostNavigate({ path: '/members' });
+        postNavigate('/members', 9);
 
-        expect(acks()).toHaveLength(1);
+        expect(acks()).toEqual([{
+            data: {
+                type: MessageType.HostNavigateAck,
+                payload: { id: 9, path: '/members' },
+            },
+            targetOrigin: PARENT_ORIGIN,
+        }]);
+    });
+
+    it('does not consume the REQUEST id sequence', () => {
+        // The host numbers HOST_NAVIGATE from its own counter. If the SDK ever
+        // reached for `transport.nextId()` here, the next proxied request would
+        // skip an id and the REQUEST/RESPONSE correlation would drift.
+        const bridge = makeBridge();
+        bridge.onHostNavigate(() => {});
+
+        postNavigate('/members', 999);
+        void bridge.request({ method: 'GET', path: 'me' });
+
+        const requests = host.sent.filter((m) => m.data.type === MessageType.Request);
+        expect(requests).toHaveLength(1);
+        expect((requests[0]?.data.payload as { id: number }).id).toBe(1);
     });
 });
