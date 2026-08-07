@@ -162,10 +162,26 @@ not mean.** So the app announces instead.
 - when the **first** `onHostNavigate` listener subscribes → `hostNavigate: true`
 - when the **last** one is removed, including on `destroy()` → `hostNavigate: false`
 
+…and once more, restating the **current** state, when `CONTEXT` arrives.
+
 It is deliberately **not** sent at construction — a React app subscribes in an
 effect after mount, so a boot-time announcement would always claim the wrong
 thing — and not on the second or subsequent subscribe. A missing announcement
 and `{ hostNavigate: false }` mean the same thing to the host.
+
+**The repeat on CONTEXT exists so a late-wiring host cannot miss the
+announcement.** The message is fire-and-forget: if the app subscribes before the
+host has attached its own listener, the only announcement it was ever going to
+get lands on the floor, and the host silently falls back to full-page navigation
+for the rest of the session. CONTEXT is the one moment the host is provably
+listening, so the SDK restates whatever the state is then — `true` if a listener
+has attached, `false` if none has yet, with the first-subscribe transition
+following a moment later.
+
+**Therefore the host must treat `SET_CAPABILITIES` as idempotent state, not as
+an event to count.** The same flag will legitimately arrive twice (subscribe,
+then CONTEXT). Overwrite what you hold; never toggle, tally, or assume a
+duplicate means something changed.
 
 `capabilities` is an object rather than a bare boolean so that the next
 capability (an ack for save-bar state, say) can be added as a field instead of a
@@ -244,7 +260,8 @@ place both repos agree on.
   "payload": { "id": 7, "path": "/members" }
 }
 
-// iframe → parent. Sent on change only: first subscribe, and last unsubscribe.
+// iframe → parent. Sent on change (first subscribe, last unsubscribe) and
+// restated once on CONTEXT. Idempotent state — the same flag may arrive twice.
 {
   "type": "FLASHMANDU_BRIDGE:SET_CAPABILITIES",
   "payload": { "capabilities": { "hostNavigate": true } }

@@ -460,3 +460,81 @@ describe('SET_CAPABILITIES', () => {
         expect(payload.capabilities).toEqual({ hostNavigate: true });
     });
 });
+
+/**
+ * The race this closes: SET_CAPABILITIES is fire-and-forget, and the host may
+ * attach its listener after the app has already subscribed. Without a repeat,
+ * the host misses the only announcement it was ever going to get and silently
+ * falls back to full-page navigation for the whole session — the archetypal
+ * "sometimes the shell isn't persistent" bug.
+ *
+ * CONTEXT is the one moment the host is provably listening, so the SDK restates
+ * the CURRENT state there. The host must treat SET_CAPABILITIES as idempotent
+ * state, never as an event to count.
+ */
+describe('SET_CAPABILITIES on CONTEXT', () => {
+    /** Deliver the host's CONTEXT exactly as the transport expects it. */
+    function deliverContext(): void {
+        dispatchMessage({
+            data: {
+                type: MessageType.Context,
+                payload: { origin: PARENT_ORIGIN },
+            },
+        });
+    }
+
+    it('restates hostNavigate: true for a listener registered before CONTEXT', () => {
+        // The actual race: the app subscribed while the host was still wiring
+        // up, so the first announcement may have fallen on the floor.
+        const bridge = makeBridge();
+        bridge.onHostNavigate(() => {});
+
+        deliverContext();
+
+        expect(announcedHostNavigate()).toEqual([true, true]);
+    });
+
+    it('announces false at CONTEXT with no listener, then true on subscribe', () => {
+        const bridge = makeBridge();
+
+        deliverContext();
+        expect(announcedHostNavigate()).toEqual([false]);
+
+        bridge.onHostNavigate(() => {});
+        expect(announcedHostNavigate()).toEqual([false, true]);
+    });
+
+    it('leaves the host with true as the last word, whichever order things happen', () => {
+        const bridge = makeBridge();
+
+        deliverContext();
+        bridge.onHostNavigate(() => {});
+
+        const seen = announcedHostNavigate();
+        expect(seen[seen.length - 1]).toBe(true);
+    });
+
+    it('does not fold a subscribe made from a ready handler into the CONTEXT announcement', () => {
+        // A `ready` handler that subscribes must still produce its own
+        // transition announcement — the CONTEXT restatement is sent first, so
+        // it reports the state as it was, not as it is about to become.
+        const bridge = makeBridge();
+        bridge.on('ready', () => {
+            bridge.onHostNavigate(() => {});
+        });
+
+        deliverContext();
+
+        expect(announcedHostNavigate()).toEqual([false, true]);
+    });
+
+    it('still acks a navigate that arrives after the CONTEXT restatement', () => {
+        const bridge = makeBridge();
+        bridge.onHostNavigate(() => {});
+        deliverContext();
+
+        postNavigate('/members', 3);
+
+        expect(acks()).toHaveLength(1);
+    });
+});

@@ -112,6 +112,18 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
                     tz: payload.tz ?? null,
                     expiresAt: payload.expiresAt ?? null,
                 };
+                // Re-announce the CURRENT capability state the moment the host
+                // declares itself ready. SET_CAPABILITIES is fire-and-forget,
+                // so a host that wired its listener up late would otherwise
+                // miss an announcement made on an early subscribe and fall back
+                // to full-page navigation for the rest of the session, silently.
+                // CONTEXT is the one point where the host is provably listening.
+                //
+                // Sent before the emits below so that any subscribe made from a
+                // `ready` handler still produces its own transition
+                // announcement rather than being folded into this one.
+                announceCapabilities();
+
                 readyResolve?.(context);
                 emit('context', context);
                 emit('ready', context);
