@@ -196,25 +196,91 @@ describe('UrlSync host navigation', () => {
 });
 
 /**
- * Structural guard.
+ * Drift guard: the README's adapter claims vs the actual source.
  *
- * The bug this task fixes was found by `grep -rn onHostNavigate src/next/`
- * returning nothing, because the adapter simply never subscribed. Without a
- * renderer in this repo there is no way to assert "mounting subscribes" by
- * behaviour, so the grep itself is encoded here: it is the check that would
- * have caught the original omission, and it fails loudly if someone deletes the
- * wiring again. Replace it with a real mount test the day a DOM environment
- * lands.
+ * We have now shipped the same bug twice — prose asserting that an adapter
+ * wires host navigation when the code did not. The first time,
+ * `grep -rn onHostNavigate src/next/` returned nothing while the docs said
+ * otherwise; the second time the claim was true for `/next` and false for
+ * `/react`. Nothing links the two documents, so nothing caught either.
+ *
+ * This encodes the grep. It reads the claim out of the README's adapter table
+ * and checks it against the file that would have to implement it. It is not a
+ * substitute for a mount test — see the limitation note in the report — but it
+ * catches the one class of error we keep hitting: a claim in prose that the
+ * code stopped supporting.
  */
-describe('UrlSync adapter wiring', () => {
-    it('still calls subscribeHostNavigation from the Next adapter', async () => {
-        const { readFile } = await import('node:fs/promises');
-        const source = await readFile(
-            new URL('../next/url-sync.tsx', import.meta.url),
-            'utf8',
-        );
+describe('README adapter claims match the source', () => {
+    const ADAPTERS: ReadonlyArray<{ importPath: string; source: string }> = [
+        { importPath: '@flashmandu/app-bridge/next', source: '../next/url-sync.tsx' },
+        { importPath: '@flashmandu/app-bridge/react', source: '../react/url-sync.tsx' },
+    ];
 
-        expect(source).toContain('subscribeHostNavigation');
-        expect(source).toMatch(/return subscribeHostNavigation\(/);
+    /** Anything that constitutes actually wiring the inbound channel. */
+    const SUBSCRIBES = /subscribeHostNavigation|onHostNavigate|onNavigate=/;
+
+    async function readText(relative: string): Promise<string> {
+        const { readFile } = await import('node:fs/promises');
+        return readFile(new URL(relative, import.meta.url), 'utf8');
+    }
+
+    /**
+     * The inbound-column cell for an adapter row in the README's comparison
+     * table. `✅` claims it subscribes, `❌` claims it does not.
+     */
+    function inboundClaim(readme: string, importPath: string): string {
+        const row = readme
+            .split('\n')
+            .find((line) => line.startsWith('|') && line.includes(importPath));
+        expect(row, `no README table row for ${importPath}`).toBeDefined();
+        const cells = (row as string).split('|').map((c) => c.trim());
+        return cells[cells.length - 2] ?? '';
+    }
+
+    it('documents every adapter in the comparison table', async () => {
+        const readme = await readText('../../README.md');
+
+        for (const { importPath } of ADAPTERS) {
+            expect(inboundClaim(readme, importPath)).not.toBe('');
+        }
+    });
+
+    it.each(ADAPTERS)(
+        'claim for $importPath is backed by $source',
+        async ({ importPath, source }) => {
+            const readme = await readText('../../README.md');
+            const claim = inboundClaim(readme, importPath);
+            const code = await readText(source);
+
+            const claimsItSubscribes = claim.includes('✅');
+            expect(
+                claim.includes('✅') || claim.includes('❌'),
+                `inbound claim for ${importPath} must be ✅ or ❌, got: ${claim}`,
+            ).toBe(true);
+
+            if (claimsItSubscribes) {
+                expect(
+                    SUBSCRIBES.test(code),
+                    `README says ${importPath} subscribes to host navigation, but ${source} does not wire it`,
+                ).toBe(true);
+            } else {
+                expect(
+                    SUBSCRIBES.test(code),
+                    `README says ${importPath} does NOT subscribe, but ${source} wires it — the docs are stale`,
+                ).toBe(false);
+            }
+        },
+    );
+
+    it('keeps the React adapter documented as prop-gated, matching the code', async () => {
+        // The `/react` claim is conditional in a way the table cannot express:
+        // it subscribes ONLY when `onNavigate` is passed. If that gate is ever
+        // removed the prose is wrong even though the ✅ still holds.
+        const code = await readText('../react/url-sync.tsx');
+        const readme = await readText('../../README.md');
+
+        expect(code).toContain('onNavigate');
+        expect(code).toMatch(/if \(!subscribes\) return;/);
+        expect(readme).toContain('onNavigate');
     });
 });

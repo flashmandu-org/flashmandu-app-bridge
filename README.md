@@ -71,17 +71,18 @@ After `ready()`:
   sidebar, and `onHostNavigate(listener)` receives the merchant's clicks on
   those links so the app can route internally instead of reloading the whole
   admin page. Next apps get this wired for them; React and everyone else
-  subscribe by hand — see [Framework adapters](#framework-adapters).
+  React and Next apps get this from `<UrlSync />` — see
+  [Framework adapters](#framework-adapters).
 
 ## Framework adapters
 
-There are two `UrlSync` components and **they do not wire the same things.**
-Check which one you are importing before assuming host navigation is handled:
+There are two `UrlSync` components. Both wire host navigation in both
+directions; they differ in whether you have to hand them a router:
 
-| Import                          | Address bar (outbound) | Sidebar clicks (inbound)        |
-| ------------------------------- | ---------------------- | -------------------------------- |
-| `@flashmandu/app-bridge/next`   | ✅ automatic           | ✅ **subscribes for you**        |
-| `@flashmandu/app-bridge/react`  | ✅ automatic           | ❌ **you must subscribe by hand** |
+| Import                          | Address bar (outbound) | Sidebar clicks (inbound)                     |
+| ------------------------------- | ---------------------- | --------------------------------------------- |
+| `@flashmandu/app-bridge/next`   | ✅ automatic           | ✅ **automatic**                              |
+| `@flashmandu/app-bridge/react`  | ✅ automatic           | ✅ **when you pass `onNavigate`**             |
 
 ### Next apps — `<UrlSync />` wires both directions
 
@@ -134,32 +135,40 @@ pushed.
 > is not a bug, and it is exactly why the host must treat `SET_CAPABILITIES` as
 > idempotent state rather than an event to count.
 
-### React apps — `<UrlSync />` is outbound-only
+### React apps — `<UrlSync />` needs one prop
 
-The router-agnostic component at `@flashmandu/app-bridge/react` takes
-`pathname` and `search` as props and has no router to push to. **It mirrors your
-route into the address bar, but it does NOT subscribe to `onHostNavigate`.**
-Mounting it alone leaves the merchant's sidebar clicks doing full page loads.
+The router-agnostic component at `@flashmandu/app-bridge/react` is router-
+agnostic by design: it takes `pathname` and `search` as props, so it has no
+router of its own to push to. **Pass `onNavigate` and it subscribes to
+`onHostNavigate` for you, exactly as the Next adapter does.**
 
-Subscribe alongside it — two lines, wherever your router is in scope:
+```tsx
+import { UrlSync } from '@flashmandu/app-bridge/react';
 
-```ts
-import { useAppBridge } from '@flashmandu/app-bridge/react';
-
-const { bridge } = useAppBridge(); // stable singleton, so the dep never churns
-
-useEffect(() => bridge.onHostNavigate((path) => myRouter.push(path)), [bridge]);
+<UrlSync
+  pathname={location.pathname}
+  search={location.search}
+  onDeepLink={(path) => myRouter.replace(path)}
+  onNavigate={(path) => myRouter.push(path)}
+/>
 ```
 
-Return the unsubscribe (the one-liner above does, by returning it from the
-effect) and subscribe on mount rather than lazily on first navigation — the two
-rules the Next adapter follows, for the two reasons given above: a remount must
-not stack listeners, and the capability announcement is what unlocks
-suppression.
+`onNavigate` is separate from `onDeepLink` because the two are different
+navigations: a deep-link restore corrects the current history entry
+(`replace`), while a sidebar click is a new entry the merchant can go back from
+(`push`).
+
+**Omit `onNavigate` and the component does not subscribe — deliberately.**
+Subscribing announces the capability, and announcing it with nothing to handle
+the navigation would leave the merchant on a dead link, which is worse than the
+full-page navigation you get by leaving it off. So: pass it unconditionally, or
+not at all. It is read at mount to decide; the function itself may be a fresh
+inline arrow on every render.
 
 ### Any other framework
 
-Same two lines, minus the React hook:
+Subscribe directly, following the same two rules — return the unsubscribe, and
+subscribe on mount rather than lazily on first navigation:
 
 ```ts
 const off = bridge.onHostNavigate((path) => myRouter.push(path));
@@ -363,6 +372,13 @@ place both repos agree on.
   "payload": { "capabilities": { "hostNavigate": true } }
 }
 ```
+
+> **Host implementers: expect `true → false → true` from apps in dev.** React
+> Strict Mode mounts effects twice, so a development page load produces a
+> subscribe, an unsubscribe and a resubscribe — three announcements where
+> production sends one. It is not a bug and it is not a teardown you should act
+> on beyond updating the flag you hold. Store the last value; never toggle,
+> tally, or treat a repeat as a state change.
 
 An inbound `HOST_NAVIGATE` is **dropped silently, with no ack**, unless all of:
 

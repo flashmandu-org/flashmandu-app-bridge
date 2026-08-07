@@ -27,9 +27,9 @@
  * keep rendering, so the first sync fires the moment it arrives.
  */
 
-import { Suspense, useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { getBridge, subscribeHostNavigation } from '../react/use-app-bridge.js';
+import { getBridge } from '../react/use-app-bridge.js';
 import { resolveParentOrigin } from '../transport.js';
 import { UrlSync as UrlSyncBase } from '../react/url-sync.js';
 
@@ -66,28 +66,6 @@ function UrlSyncInner({
   const searchParams = useSearchParams();
   const search = searchParams?.toString() ? `?${searchParams.toString()}` : '';
   const [origin, setOrigin] = useState<string | null>(null);
-
-  // Read at delivery time by the host-navigation subscription below, which is
-  // mount-only and must not close over a stale router or pathname.
-  const latest = useRef({ router, pathname, search });
-  latest.current = { router, pathname, search };
-
-  // ── INBOUND: the merchant clicked one of this app's sidebar links ─────────
-  //
-  // Mount-only, and deliberately NOT keyed on [router] as one might expect.
-  // Re-subscribing tears the last listener down and adds a new one, and the
-  // bridge announces capability on those transitions — so a dependency that
-  // changes identity per render would flap `hostNavigate` false/true at the
-  // host on every navigation. One stable subscription for the component's
-  // lifetime; the ref above keeps it current.
-  useEffect(() => {
-    if (typeof window === 'undefined' || window.self === window.top) return;
-
-    return subscribeHostNavigation(getBridge(), {
-      push: (path) => latest.current.router.push(path),
-      currentUrl: () => `${latest.current.pathname}${latest.current.search}`,
-    });
-  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined' || window.self === window.top) return;
@@ -127,6 +105,14 @@ function UrlSyncInner({
       {...(origin !== null ? { targetOrigin: origin } : {})}
       {...(allowedParentOrigins !== undefined ? { allowedParentOrigins } : {})}
       onDeepLink={(path) => router.replace(path)}
+      // INBOUND host navigation. Supplied unconditionally, so the base always
+      // subscribes and always announces the capability — a Next app gets the
+      // persistent shell by mounting this component and nothing else.
+      //
+      // `replace` above vs `push` here is the reason these are two props: a
+      // deep-link restore corrects the current history entry, while a sidebar
+      // click is a new entry the merchant can go back from.
+      onNavigate={(path) => router.push(path)}
     />
   );
 }
