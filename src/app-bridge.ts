@@ -184,6 +184,15 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
         if (path === null || !isAppRelativePath(path)) {
             return;
         }
+        // No subscriber means the app cannot route, however well-formed the
+        // message was. Staying silent is the point: the host has already moved
+        // the address bar and the active highlight, and a missing ack is how it
+        // learns to undo that. Acking here would make an app that imported the
+        // SDK but never called `onHostNavigate` indistinguishable from one that
+        // navigated successfully.
+        if (hostNavListeners.size === 0) {
+            return;
+        }
         for (const listener of hostNavListeners) {
             try {
                 listener(path);
@@ -191,6 +200,11 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
                 // A listener throwing must not break the bridge.
             }
         }
+        // `transport.send` targets the resolved parent origin explicitly.
+        transport.send({
+            type: MessageType.HostNavigateAck,
+            payload: { path },
+        });
     };
 
     if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {

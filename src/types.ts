@@ -36,6 +36,8 @@ export const MessageType = {
     SetSidebarLinks: 'FLASHMANDU_BRIDGE:SET_SIDEBAR_LINKS',
     /** parent → iframe. The merchant clicked one of the app's sidebar links. */
     HostNavigate: 'FLASHMANDU_BRIDGE:HOST_NAVIGATE',
+    /** iframe → parent. A HOST_NAVIGATE reached an app listener. */
+    HostNavigateAck: 'FLASHMANDU_BRIDGE:HOST_NAVIGATE_ACK',
 } as const;
 
 export type MessageTypeValue = (typeof MessageType)[keyof typeof MessageType];
@@ -106,6 +108,19 @@ export interface SetSidebarLinksPayload {
 /** HOST_NAVIGATE payload (parent → iframe). */
 export interface HostNavigatePayload {
     /** App-relative path the merchant asked for, always leading-slashed. */
+    path: string;
+}
+
+/**
+ * HOST_NAVIGATE_ACK payload (iframe → parent).
+ *
+ * Sent only when a HOST_NAVIGATE passed every gate AND at least one app
+ * listener was invoked with it. Silence means the app did not route: the host
+ * must treat a missing ack as a failed navigation and recover (it has already
+ * moved the address bar and the active highlight by then).
+ */
+export interface HostNavigateAckPayload {
+    /** The accepted path, echoed back so the host can correlate it. */
     path: string;
 }
 

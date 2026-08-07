@@ -24,17 +24,31 @@ import { MessageType } from '../types.js';
 const PARENT_ORIGIN = 'https://merchant.flashmandu.example';
 const SEARCH = `?session_token=t&app_id=a&parent_origin=${encodeURIComponent(PARENT_ORIGIN)}`;
 
+interface SentMessage {
+    data: { type?: string; payload?: unknown };
+    targetOrigin: string;
+}
+
 interface FakeWindow extends EventTarget {
     parent: FakeWindow;
     postMessage: (message: unknown, targetOrigin: string) => void;
+    sent: SentMessage[];
 }
 
 function installFakeWindow(): FakeWindow {
     const fake = new EventTarget() as FakeWindow;
     fake.parent = fake;
-    fake.postMessage = (): void => {};
+    fake.sent = [];
+    fake.postMessage = (message: unknown, targetOrigin: string): void => {
+        fake.sent.push({ data: message as SentMessage['data'], targetOrigin });
+    };
     (globalThis as Record<string, unknown>).window = fake;
     return fake;
+}
+
+/** Every HOST_NAVIGATE_ACK the bridge has posted to the parent so far. */
+function acks(): SentMessage[] {
+    return host.sent.filter((m) => m.data.type === MessageType.HostNavigateAck);
 }
 
 let host: FakeWindow;
@@ -164,5 +178,82 @@ describe('onHostNavigate', () => {
         });
 
         expect(listener).not.toHaveBeenCalled();
+    });
+});
+
+/**
+ * The ack is the host's only evidence that a navigate landed. The host
+ * suppresses the merchant's click, rewrites the address bar with pushState and
+ * moves the active highlight BEFORE posting, so a dropped message leaves the
+ * chrome lying about what the iframe is showing — and the pushState means
+ * re-clicking the same link is a no-op. Silence therefore has to mean "did not
+ * route", which makes the two negative cases below as load-bearing as the
+ * positive one.
+ */
+describe('HOST_NAVIGATE_ACK', () => {
+    it('acks a navigate that reached a registered listener', () => {
+        const bridge = makeBridge();
+        bridge.onHostNavigate(() => {});
+
+        postHostNavigate({ path: '/members' });
+
+        expect(acks()).toEqual([{
+            data: { type: MessageType.HostNavigateAck, payload: { path: '/members' } },
+            targetOrigin: PARENT_ORIGIN,
+        }]);
+    });
+
+    it('does not ack when the origin gate rejects the message', () => {
+        const bridge = makeBridge();
+        bridge.onHostNavigate(() => {});
+
+        dispatchMessage({
+            data: { type: MessageType.HostNavigate, payload: { path: '/members' } },
+            origin: 'https://evil.example',
+        });
+
+        expect(acks()).toEqual([]);
+    });
+
+    it('does not ack when no listener is registered', () => {
+        // An app that imported the SDK but never subscribed is exactly the case
+        // the host needs to detect, so a well-formed navigate still gets silence.
+        makeBridge();
+
+        postHostNavigate({ path: '/members' });
+
+        expect(acks()).toEqual([]);
+    });
+
+    it('does not ack a payload the path guard rejects', () => {
+        const bridge = makeBridge();
+        bridge.onHostNavigate(() => {});
+
+        postHostNavigate({ path: '//evil.example/members' });
+
+        expect(acks()).toEqual([]);
+    });
+
+    it('acks once per accepted navigate, whatever the listener count', () => {
+        const bridge = makeBridge();
+        bridge.onHostNavigate(() => {});
+        bridge.onHostNavigate(() => {});
+
+        postHostNavigate({ path: '/members' });
+
+        expect(acks()).toHaveLength(1);
+    });
+
+    it('still acks when a listener throws', () => {
+        // The listener received the path; that it then failed is the app's
+        // problem, not a transport failure the host should try to recover from.
+        const bridge = makeBridge();
+        bridge.onHostNavigate(() => {
+            throw new Error('router blew up');
+        });
+
+        postHostNavigate({ path: '/members' });
+
+        expect(acks()).toHaveLength(1);
     });
 });

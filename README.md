@@ -67,6 +67,10 @@ After `ready()`:
   failure comes back as `{ status: 0 }`.
 - `toast(message, variant?)`, `navigate(href)`, and `setTitle(title)` are
   fire-and-forget notifications to the shell.
+- `setSidebarLinks(links)` registers the app's own navigation in the host
+  sidebar, and `onHostNavigate(listener)` receives the merchant's clicks on
+  those links so the app can route internally instead of reloading the whole
+  admin page. **Subscribe if you call `setSidebarLinks`** — see below.
 
 ## Security
 
@@ -93,6 +97,33 @@ repo. Wire format is `{ type: string, payload?: ... }`.
 | iframe → parent  | `TOAST`                         | `{ message, variant? }`                                            |
 | iframe → parent  | `NAVIGATE`                      | `{ href }`                                                         |
 | iframe → parent  | `FLASHMANDU_BRIDGE:SET_TITLE`   | `{ title }`                                                        |
+| iframe → parent  | `FLASHMANDU_BRIDGE:SET_SIDEBAR_LINKS` | `{ links: [{ label, path, icon? }] }`                        |
+| parent → iframe  | `FLASHMANDU_BRIDGE:HOST_NAVIGATE` | `{ path }`                                                       |
+| iframe → parent  | `FLASHMANDU_BRIDGE:HOST_NAVIGATE_ACK` | `{ path }`                                                   |
+
+### Host-driven navigation and the ack
+
+`HOST_NAVIGATE` / `HOST_NAVIGATE_ACK` are a **request/ack pair, not a
+notification.** The host suppresses the merchant's sidebar click, rewrites the
+address bar with `pushState`, and moves the active highlight *before* it posts —
+so if the message never lands, the chrome says "Members" while the iframe still
+shows the old page, and because the URL already changed, clicking the same link
+again does nothing. The ack is the host's only evidence that the navigation
+actually happened; absence of one is its cue to recover.
+
+The SDK posts `HOST_NAVIGATE_ACK` only when **all** of the following hold:
+
+1. The message came from the parent window on the resolved parent origin.
+2. `path` is a string and is app-relative — a leading `/`, but not `//` or `/\`,
+   both of which browsers and routers resolve as off-site absolute URLs.
+3. **At least one `onHostNavigate` listener is registered**, and was invoked.
+
+Condition 3 is deliberate: an app that imported the SDK but never subscribed
+must be distinguishable from one that routed successfully, so it gets silence.
+A listener that throws still acks — it received the path, and its own failure is
+not something the host can fix. The ack is sent once per accepted message,
+regardless of how many listeners are subscribed, and always targets the resolved
+parent origin.
 
 > **Quirk.** The host uses the unprefixed `TOAST` and `NAVIGATE` tokens (not
 > `FLASHMANDU_BRIDGE:TOAST` / `:NAVIGATE`), and the TOAST/NAVIGATE payload
@@ -124,6 +155,8 @@ interface AppBridge {
   toast(message: string, variant?: 'default'|'success'|'error'|'warning'|'info'): void;
   navigate(href: string): void;
   setTitle(title: string): void;
+  setSidebarLinks(links: Array<{ label: string; path: string; icon?: string }>): void;
+  onHostNavigate(listener: (path: string) => void): () => void;
   request(input: { method: 'GET'|'POST'; path: string; body?: Record<string, unknown> | null }): Promise<{ status: number; body: unknown }>;
   on(event: 'context'|'ready'|'destroy', listener: (payload: unknown) => void): () => void;
   destroy(): void;
