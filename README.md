@@ -70,7 +70,61 @@ After `ready()`:
 - `setSidebarLinks(links)` registers the app's own navigation in the host
   sidebar, and `onHostNavigate(listener)` receives the merchant's clicks on
   those links so the app can route internally instead of reloading the whole
-  admin page. **Subscribe if you call `setSidebarLinks`** — see below.
+  admin page. React and Next apps get this for free — see
+  [Framework adapters](#framework-adapters).
+
+## Framework adapters
+
+**Mounting `<UrlSync />` wires host navigation in both directions: it mirrors
+the app's route into the platform address bar, and it subscribes to
+`onHostNavigate` so the merchant's sidebar clicks route inside the app — no
+per-app wiring, no manual `bridge.onHostNavigate(...)` call.**
+
+```tsx
+// app/layout.tsx
+import { UrlSync } from '@flashmandu/app-bridge/next';
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html>
+      <body>
+        <UrlSync />
+        {children}
+      </body>
+    </html>
+  );
+}
+```
+
+Mount it once, high in the tree, and leave it mounted. Specifically it:
+
+- deep-links on mount, restoring the path **and** the shareable query state the
+  host is carrying in `?path=`;
+- posts `PATH_CHANGE` as the app navigates, so the address bar tracks the app;
+- subscribes to `onHostNavigate` on mount and routes with `router.push()`.
+
+That third point is why mounting matters early: **subscribing is what announces
+the `hostNavigate` capability, and the host will not suppress a sidebar click
+until it has seen that announcement.** An app that mounts `<UrlSync />` late, or
+not at all, keeps today's full-page navigation — correct, but slow, and with no
+error to tell you why.
+
+The subscription is mount-only and its unsubscribe is returned from the effect,
+so a remount does not stack listeners and an unmount correctly announces
+`hostNavigate: false`. Routing in response to a host navigate makes the app post
+`PATH_CHANGE` back, which is harmless: the host answers `PATH_CHANGE` by
+rewriting its address bar and never by posting `HOST_NAVIGATE`, so there is no
+cycle. A navigate to the URL the app is already on is skipped rather than
+pushed.
+
+Apps on a framework without an adapter subscribe by hand:
+
+```ts
+useEffect(() => bridge.onHostNavigate((path) => myRouter.push(path)), []);
+```
+
+Return the unsubscribe, and subscribe on mount rather than lazily — the same two
+rules the adapter follows, for the same two reasons.
 
 ## Security
 
@@ -146,7 +200,9 @@ between the host and the SDK, and the app never has to handle it.
 **The host must not suppress a sidebar click until the app has announced
 `hostNavigate: true`.** Without an announcement the link performs an ordinary
 full-page navigation, which is exactly what apps on older SDKs already do — so
-they keep working unchanged rather than snapping back.
+they keep working unchanged rather than snapping back. For React and Next apps
+the announcement is made by mounting `<UrlSync />`; see
+[Framework adapters](#framework-adapters).
 
 The ack alone cannot carry this. An ack only arrives *after* a click the host
 already suppressed, so the first click of every session would have to be either

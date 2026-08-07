@@ -26,6 +26,49 @@ export function getBridge(): AppBridge {
   return bridgeSingleton;
 }
 
+/**
+ * Where a host-driven navigation should land.
+ *
+ * `currentUrl` is read at DELIVERY time, not at subscribe time: the
+ * subscription is mount-only (see below), so it must not close over a stale
+ * pathname. Adapters pass a ref-backed getter.
+ */
+export interface HostNavigationTarget {
+  /** Perform the in-app navigation. */
+  push: (path: string) => void;
+  /** The app's current `pathname + search`, as it is right now. */
+  currentUrl: () => string;
+}
+
+/**
+ * Route the app when the merchant clicks one of its host sidebar links.
+ *
+ * Split out of the adapter so the behaviour is testable without a React
+ * renderer, and so any adapter (Next today, others later) wires it the same
+ * way. Returns the bridge's unsubscribe handle unchanged — an adapter MUST
+ * return it from its effect, both so a remount does not stack listeners and so
+ * teardown triggers the `hostNavigate: false` capability announcement.
+ *
+ * Subscribing is what announces `hostNavigate: true`, which is what unlocks
+ * host-side click suppression — so adapters subscribe on MOUNT, never lazily on
+ * first navigation, or the merchant's early clicks are all full page loads.
+ *
+ * The same-URL check is a courtesy, not a loop-breaker: routing here makes the
+ * app post PATH_CHANGE back to the host, but the host answers PATH_CHANGE by
+ * rewriting its own address bar and never by posting HOST_NAVIGATE, so there is
+ * no cycle to break. What it does avoid is a pointless `push()` to the page the
+ * app is already on — a scroll reset or refetch in some routers.
+ */
+export function subscribeHostNavigation(
+  bridge: AppBridge,
+  target: HostNavigationTarget,
+): () => void {
+  return bridge.onHostNavigate((path: string): void => {
+    if (path === target.currentUrl()) return;
+    target.push(path);
+  });
+}
+
 function resolveEmbeddedProfileId(): number | null {
   if (typeof window === 'undefined') return null;
   if (window.self === window.top) return null;
