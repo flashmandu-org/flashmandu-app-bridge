@@ -154,6 +154,28 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
     const hostNavListeners = new Set<(path: string) => void>();
 
     /**
+     * Tell the host what the app has actually wired up.
+     *
+     * Announced on CHANGE, never on a timer and never at construction: a React
+     * app subscribes in an effect after mount, so a boot-time announcement
+     * would always claim the wrong thing. The host needs this because it cannot
+     * probe — asking with a synthetic HOST_NAVIGATE would make the app route to
+     * its own current path, which is a no-op in some routers and a scroll-reset
+     * or refetch in others. So the app volunteers instead.
+     *
+     * The flag is derived from the live set rather than tracked separately, so
+     * the announcement cannot drift from reality.
+     */
+    function announceCapabilities(): void {
+        transport.send({
+            type: MessageType.SetCapabilities,
+            payload: {
+                capabilities: { hostNavigate: hostNavListeners.size > 0 },
+            },
+        });
+    }
+
+    /**
      * HOST_NAVIGATE arrives off the raw `window` rather than through the
      * transport, but it is held to the same gate: it is accepted only from the
      * parent window, only on the parent origin resolved at boot, and never when
@@ -189,7 +211,7 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
         // an id here would hand the host an ack it cannot match, which is worse
         // than the silence it already knows how to recover from.
         const rawId: unknown = data.payload?.id;
-        if (typeof rawId !== 'number' || !Number.isFinite(rawId)) {
+        if (typeof rawId !== 'number' || !Number.isInteger(rawId) || rawId < 0) {
             return;
         }
         const id: number = rawId;
@@ -276,10 +298,21 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
             });
         },
         onHostNavigate(listener: (path: string) => void): () => void {
+            const wasEmpty = hostNavListeners.size === 0;
             hostNavListeners.add(listener);
+            // Only the transition matters. Announcing on every subscribe would
+            // spam the host with news it already has.
+            if (wasEmpty && hostNavListeners.size > 0) {
+                announceCapabilities();
+            }
 
             return (): void => {
-                hostNavListeners.delete(listener);
+                // `delete` reports whether it actually removed anything, so a
+                // double-called unsubscribe cannot fire a second announcement.
+                const removed = hostNavListeners.delete(listener);
+                if (removed && hostNavListeners.size === 0) {
+                    announceCapabilities();
+                }
             };
         },
         request(input: RequestOptions): Promise<ResponseResult> {
@@ -318,7 +351,15 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
                 return;
             }
             destroyed = true;
+            // Tearing the bridge down removes every host-navigate listener, so
+            // the host is told the same way it would be told about an ordinary
+            // unsubscribe — otherwise it would keep suppressing clicks for an
+            // app that can no longer route. Sent before the transport closes.
+            const hadHostNavListeners = hostNavListeners.size > 0;
             hostNavListeners.clear();
+            if (hadHostNavListeners) {
+                announceCapabilities();
+            }
             if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
                 window.removeEventListener('message', onHostMessage);
             }

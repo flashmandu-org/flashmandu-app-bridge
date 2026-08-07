@@ -38,6 +38,8 @@ export const MessageType = {
     HostNavigate: 'FLASHMANDU_BRIDGE:HOST_NAVIGATE',
     /** iframe → parent. A HOST_NAVIGATE reached an app listener. */
     HostNavigateAck: 'FLASHMANDU_BRIDGE:HOST_NAVIGATE_ACK',
+    /** iframe → parent. Which bridge capabilities the app has wired up. */
+    SetCapabilities: 'FLASHMANDU_BRIDGE:SET_CAPABILITIES',
 } as const;
 
 export type MessageTypeValue = (typeof MessageType)[keyof typeof MessageType];
@@ -133,6 +135,37 @@ export interface HostNavigateAckPayload {
     id: number;
     /** The accepted path, echoed back for debugging. Not the correlation key. */
     path: string;
+}
+
+/**
+ * What the app has actually wired up, as opposed to what its SDK version could
+ * in principle support.
+ *
+ * An object rather than a bare flag on purpose: the next capability must not
+ * need a new message type. Every field is optional from the host's point of
+ * view — an absent field means "not supported", which is the same thing an
+ * older SDK's total silence means.
+ */
+export interface BridgeCapabilities {
+    /**
+     * True once at least one `onHostNavigate` listener is registered. The host
+     * uses this to decide whether it may suppress a sidebar click at all: with
+     * no announcement it must let the click perform an ordinary full-page
+     * navigation.
+     */
+    hostNavigate: boolean;
+}
+
+/**
+ * SET_CAPABILITIES payload (iframe → parent).
+ *
+ * Sent when the app's capability set CHANGES — on the first `onHostNavigate`
+ * subscribe, and again when the last one is removed. Never sent at
+ * construction: a React app subscribes in an effect after mount, so an
+ * announcement at boot would always claim the wrong thing.
+ */
+export interface SetCapabilitiesPayload {
+    capabilities: BridgeCapabilities;
 }
 
 /** HTTP methods the proxy endpoint allows (see BridgeProxyController). */

@@ -100,6 +100,7 @@ repo. Wire format is `{ type: string, payload?: ... }`.
 | iframe → parent  | `FLASHMANDU_BRIDGE:SET_SIDEBAR_LINKS` | `{ links: [{ label, path, icon? }] }`                        |
 | parent → iframe  | `FLASHMANDU_BRIDGE:HOST_NAVIGATE` | `{ id, path }`                                                   |
 | iframe → parent  | `FLASHMANDU_BRIDGE:HOST_NAVIGATE_ACK` | `{ id, path }`                                               |
+| iframe → parent  | `FLASHMANDU_BRIDGE:SET_CAPABILITIES` | `{ capabilities: { hostNavigate } }`                          |
 
 ### Host-driven navigation and the ack
 
@@ -139,6 +140,36 @@ parent origin.
 
 The listener itself receives only the `path`: the `id` is transport bookkeeping
 between the host and the SDK, and the app never has to handle it.
+
+### Capability announcement — may the host suppress a click at all?
+
+**The host must not suppress a sidebar click until the app has announced
+`hostNavigate: true`.** Without an announcement the link performs an ordinary
+full-page navigation, which is exactly what apps on older SDKs already do — so
+they keep working unchanged rather than snapping back.
+
+The ack alone cannot carry this. An ack only arrives *after* a click the host
+already suppressed, so the first click of every session would have to be either
+unsuppressed (no persistent shell until click two) or suppressed on faith (a
+hang for an app that never subscribed). Nor can the host probe by sending a
+synthetic `HOST_NAVIGATE` for the app's current path: that is a real navigation
+instruction, and routers treat it inconsistently — a no-op in some, a scroll
+reset or a refetch in others. **The host must never cause a navigation it did
+not mean.** So the app announces instead.
+
+`SET_CAPABILITIES` is sent when the capability set **changes**:
+
+- when the **first** `onHostNavigate` listener subscribes → `hostNavigate: true`
+- when the **last** one is removed, including on `destroy()` → `hostNavigate: false`
+
+It is deliberately **not** sent at construction — a React app subscribes in an
+effect after mount, so a boot-time announcement would always claim the wrong
+thing — and not on the second or subsequent subscribe. A missing announcement
+and `{ hostNavigate: false }` mean the same thing to the host.
+
+`capabilities` is an object rather than a bare boolean so that the next
+capability (an ack for save-bar state, say) can be added as a field instead of a
+new message type. Treat an absent field as unsupported.
 
 > **Quirk.** The host uses the unprefixed `TOAST` and `NAVIGATE` tokens (not
 > `FLASHMANDU_BRIDGE:TOAST` / `:NAVIGATE`), and the TOAST/NAVIGATE payload
@@ -185,9 +216,56 @@ one it was given:
 ```ts
 interface HostNavigatePayload    { id: number; path: string }  // parent → iframe
 interface HostNavigateAckPayload { id: number; path: string }  // iframe → parent
+interface BridgeCapabilities     { hostNavigate: boolean }
+interface SetCapabilitiesPayload { capabilities: BridgeCapabilities }  // iframe → parent
 ```
 
 `SidebarLink` and `SetSidebarLinksPayload` are exported alongside them.
+
+## Wire contract
+
+The authoritative envelope shapes for the host-navigation trio. The host side
+(`packages/flashmandu/apps/resources/js/app-bridge-host.ts`) should be checked
+against this table directly — there is no shared fixture yet, so this is the one
+place both repos agree on.
+
+```jsonc
+// parent → iframe. The host suppressed a sidebar click and is asking the app
+// to route. `id` is the host's own counter value: a non-negative integer.
+{
+  "type": "FLASHMANDU_BRIDGE:HOST_NAVIGATE",
+  "payload": { "id": 7, "path": "/members" }
+}
+
+// iframe → parent. An app listener received that path. Absence means it did
+// not route — the host must recover.
+{
+  "type": "FLASHMANDU_BRIDGE:HOST_NAVIGATE_ACK",
+  "payload": { "id": 7, "path": "/members" }
+}
+
+// iframe → parent. Sent on change only: first subscribe, and last unsubscribe.
+{
+  "type": "FLASHMANDU_BRIDGE:SET_CAPABILITIES",
+  "payload": { "capabilities": { "hostNavigate": true } }
+}
+```
+
+An inbound `HOST_NAVIGATE` is **dropped silently, with no ack**, unless all of:
+
+| Field       | Requirement                                                          |
+| ----------- | -------------------------------------------------------------------- |
+| `event.origin` | Exactly the resolved parent origin. Unresolved origin ⇒ drop all. |
+| `event.source` | Exactly `window.parent`.                                          |
+| `payload.id`   | `Number.isInteger(id) && id >= 0`. No `NaN`, `Infinity`, `'7'`, `7.5`, `-1`. |
+| `payload.path` | String starting `/`, but not `//` or `/\`.                        |
+
+Plus: at least one `onHostNavigate` listener must be registered, or the message
+is dropped and no ack is sent.
+
+Outbound messages always target the resolved parent origin, never `"*"`. The
+`id` in an ack is echoed verbatim from the navigate — the SDK never allocates
+it, and in particular never draws it from the REQUEST/RESPONSE counter.
 
 ## Developing the SDK
 

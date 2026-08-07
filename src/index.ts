@@ -26,6 +26,7 @@ export type {
 } from './app-bridge.js';
 export type {
     AppContext,
+    BridgeCapabilities,
     BridgeEventName,
     BridgeListener,
     BridgeMessage,
@@ -40,6 +41,7 @@ export type {
     ReadyPayload,
     RequestOptions,
     ResponseResult,
+    SetCapabilitiesPayload,
     SetSidebarLinksPayload,
     SetTitlePayload,
     SidebarLink,

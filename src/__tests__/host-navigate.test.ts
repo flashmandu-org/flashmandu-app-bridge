@@ -51,6 +51,18 @@ function acks(): SentMessage[] {
     return host.sent.filter((m) => m.data.type === MessageType.HostNavigateAck);
 }
 
+/** Every SET_CAPABILITIES announcement, in order. */
+function announcements(): SentMessage[] {
+    return host.sent.filter((m) => m.data.type === MessageType.SetCapabilities);
+}
+
+/** Just the `hostNavigate` flag from each announcement, in order. */
+function announcedHostNavigate(): boolean[] {
+    return announcements().map(
+        (m) => (m.data.payload as { capabilities: { hostNavigate: boolean } }).capabilities.hostNavigate,
+    );
+}
+
 let host: FakeWindow;
 
 beforeEach(() => {
@@ -174,11 +186,11 @@ describe('onHostNavigate', () => {
         expect(listener).not.toHaveBeenCalled();
     });
 
-    it('drops a HOST_NAVIGATE with a missing or non-numeric id', () => {
-        // The host is the only sender and always numbers its navigations, so a
-        // message without a usable id is malformed. Dropping it is the same
-        // fail-closed call as a bad origin — an ack the host cannot match is
-        // worse than the silence it already handles.
+    it('drops a HOST_NAVIGATE whose id is not a non-negative integer', () => {
+        // The host is the only sender, and it allocates ids from a counter of
+        // non-negative integers. Anything else is malformed, and is dropped on
+        // the same fail-closed reasoning as a bad origin — an ack the host
+        // cannot match is worse than the silence it already handles.
         const bridge = makeBridge();
         const listener = vi.fn();
         bridge.onHostNavigate(listener);
@@ -188,8 +200,20 @@ describe('onHostNavigate', () => {
         postHostNavigate({ id: '1', path: '/members' });
         postHostNavigate({ id: Number.NaN, path: '/members' });
         postHostNavigate({ id: Number.POSITIVE_INFINITY, path: '/members' });
+        postHostNavigate({ id: 1.5, path: '/members' });
+        postHostNavigate({ id: -3, path: '/members' });
 
         expect(listener).not.toHaveBeenCalled();
+    });
+
+    it('accepts id 0, the first value off a zero-based counter', () => {
+        const bridge = makeBridge();
+        const seen: string[] = [];
+        bridge.onHostNavigate((path) => seen.push(path));
+
+        postNavigate('/members', 0);
+
+        expect(seen).toEqual(['/members']);
     });
 
     it('ignores messages of any other type', () => {
@@ -280,13 +304,15 @@ describe('HOST_NAVIGATE_ACK', () => {
         expect(acks()).toEqual([]);
     });
 
-    it('does not ack a message with a missing or non-numeric id', () => {
+    it('does not ack a message whose id is not a non-negative integer', () => {
         const bridge = makeBridge();
         bridge.onHostNavigate(() => {});
 
         postHostNavigate({ path: '/members' });
         postHostNavigate({ id: '1', path: '/members' });
         postHostNavigate({ id: Number.NaN, path: '/members' });
+        postHostNavigate({ id: 1.5, path: '/members' });
+        postHostNavigate({ id: -3, path: '/members' });
 
         expect(acks()).toEqual([]);
     });
@@ -333,5 +359,104 @@ describe('HOST_NAVIGATE_ACK', () => {
         const requests = host.sent.filter((m) => m.data.type === MessageType.Request);
         expect(requests).toHaveLength(1);
         expect((requests[0]?.data.payload as { id: number }).id).toBe(1);
+    });
+});
+
+/**
+ * The capability announcement exists to close the first-click hole. The host
+ * cannot infer support from a first ack, because the ack only arrives after a
+ * click it has already suppressed — so the very first click of a session would
+ * have to be either unsuppressed (no persistent shell) or suppressed on faith
+ * (a hang for an app that never subscribed). It also cannot probe with a
+ * synthetic HOST_NAVIGATE: that would make the app route to its own current
+ * path, a no-op in some routers and a scroll-reset or refetch in others.
+ *
+ * So the app volunteers. Silence from an app on an older SDK is therefore
+ * load-bearing and must be indistinguishable from `hostNavigate: false`.
+ */
+describe('SET_CAPABILITIES', () => {
+    it('announces nothing at construction, before any listener exists', () => {
+        makeBridge();
+
+        expect(announcements()).toEqual([]);
+    });
+
+    it('announces once when the first listener subscribes', () => {
+        const bridge = makeBridge();
+        bridge.onHostNavigate(() => {});
+
+        expect(announcements()).toEqual([{
+            data: {
+                type: MessageType.SetCapabilities,
+                payload: { capabilities: { hostNavigate: true } },
+            },
+            targetOrigin: PARENT_ORIGIN,
+        }]);
+    });
+
+    it('does not announce again when a second listener subscribes', () => {
+        const bridge = makeBridge();
+        bridge.onHostNavigate(() => {});
+        bridge.onHostNavigate(() => {});
+        bridge.onHostNavigate(() => {});
+
+        expect(announcedHostNavigate()).toEqual([true]);
+    });
+
+    it('announces false only when the LAST listener is removed', () => {
+        const bridge = makeBridge();
+        const offA = bridge.onHostNavigate(() => {});
+        const offB = bridge.onHostNavigate(() => {});
+
+        offA();
+        expect(announcedHostNavigate()).toEqual([true]);
+
+        offB();
+        expect(announcedHostNavigate()).toEqual([true, false]);
+    });
+
+    it('does not announce twice when the same unsubscribe is called twice', () => {
+        const bridge = makeBridge();
+        const off = bridge.onHostNavigate(() => {});
+
+        off();
+        off();
+
+        expect(announcedHostNavigate()).toEqual([true, false]);
+    });
+
+    it('announces true again when an app resubscribes after tearing down', () => {
+        const bridge = makeBridge();
+        const off = bridge.onHostNavigate(() => {});
+        off();
+        bridge.onHostNavigate(() => {});
+
+        expect(announcedHostNavigate()).toEqual([true, false, true]);
+    });
+
+    it('announces false when the bridge is destroyed with listeners attached', () => {
+        const bridge = makeBridge();
+        bridge.onHostNavigate(() => {});
+
+        bridge.destroy();
+
+        expect(announcedHostNavigate()).toEqual([true, false]);
+    });
+
+    it('announces nothing on destroy when no listener was ever attached', () => {
+        const bridge = makeBridge();
+
+        bridge.destroy();
+
+        expect(announcements()).toEqual([]);
+    });
+
+    it('reports the capability as an object, so a second flag needs no new message', () => {
+        const bridge = makeBridge();
+        bridge.onHostNavigate(() => {});
+
+        const payload = announcements()[0]?.data.payload as { capabilities: Record<string, unknown> };
+        expect(payload.capabilities).toBeTypeOf('object');
+        expect(payload.capabilities).toEqual({ hostNavigate: true });
     });
 });
