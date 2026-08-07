@@ -6,13 +6,23 @@ import { MessageType } from '../types.js';
 /**
  * HOST_NAVIGATE is the one inbound message the bridge handles off the raw
  * `window` rather than through the transport: the host posts it so a framed
- * app can route internally instead of the whole admin page reloading.
+ * app can route internally instead of the whole admin page reloading. It is
+ * held to the transport's gate all the same — parent origin, parent source,
+ * fail-closed when the origin is unknown — because an unguarded listener here
+ * would be the weakest door in the wall.
  *
  * There is no jsdom in this repo (and no new dependency to add one), so the
  * suite installs a minimal `EventTarget`-backed `window` for the duration of
  * each test. That is enough: the bridge only needs `addEventListener`,
  * `removeEventListener`, and `dispatchEvent`.
+ *
+ * Events are hand-built rather than constructed with `new MessageEvent(...)`:
+ * Node's MessageEvent rejects an `init.source` that is not a MessagePort, and
+ * the source check is exactly what these tests need to exercise.
  */
+
+const PARENT_ORIGIN = 'https://merchant.flashmandu.example';
+const SEARCH = `?session_token=t&app_id=a&parent_origin=${encodeURIComponent(PARENT_ORIGIN)}`;
 
 interface FakeWindow extends EventTarget {
     parent: FakeWindow;
@@ -37,14 +47,21 @@ afterEach(() => {
     delete (globalThis as Record<string, unknown>).window;
 });
 
-function makeBridge(): ReturnType<typeof createAppBridge> {
-    return createAppBridge({ search: '?session_token=t&app_id=a', parent: host.parent as unknown as Window });
+function makeBridge(search: string = SEARCH): ReturnType<typeof createAppBridge> {
+    return createAppBridge({ search, parent: host.parent as unknown as Window });
+}
+
+/** Dispatch a synthetic `message` event with a settable `source`. */
+function dispatchMessage(init: { data: unknown; origin?: string; source?: unknown }): void {
+    const event = new Event('message') as Event & Record<string, unknown>;
+    event.data = init.data;
+    event.origin = init.origin ?? PARENT_ORIGIN;
+    event.source = 'source' in init ? init.source : host;
+    host.dispatchEvent(event);
 }
 
 function postHostNavigate(payload: unknown): void {
-    host.dispatchEvent(new MessageEvent('message', {
-        data: { type: MessageType.HostNavigate, payload },
-    }));
+    dispatchMessage({ data: { type: MessageType.HostNavigate, payload } });
 }
 
 describe('onHostNavigate', () => {
@@ -80,6 +97,45 @@ describe('onHostNavigate', () => {
         expect(listener).not.toHaveBeenCalled();
     });
 
+    it('ignores a HOST_NAVIGATE from any origin other than the parent', () => {
+        const bridge = makeBridge();
+        const listener = vi.fn();
+        bridge.onHostNavigate(listener);
+
+        dispatchMessage({
+            data: { type: MessageType.HostNavigate, payload: { path: '/members' } },
+            origin: 'https://evil.example',
+        });
+
+        expect(listener).not.toHaveBeenCalled();
+    });
+
+    it('ignores a HOST_NAVIGATE from a window that is not the parent', () => {
+        const bridge = makeBridge();
+        const listener = vi.fn();
+        bridge.onHostNavigate(listener);
+
+        dispatchMessage({
+            data: { type: MessageType.HostNavigate, payload: { path: '/members' } },
+            source: new EventTarget(),
+        });
+
+        expect(listener).not.toHaveBeenCalled();
+    });
+
+    it('accepts nothing at all when no parent origin could be resolved', () => {
+        // Fail-closed, same as the transport: with no `parent_origin` param and
+        // no referrer there is no origin to compare against, so every inbound
+        // HOST_NAVIGATE is dropped rather than trusted.
+        const bridge = makeBridge('?session_token=t&app_id=a');
+        const listener = vi.fn();
+        bridge.onHostNavigate(listener);
+
+        postHostNavigate({ path: '/members' });
+
+        expect(listener).not.toHaveBeenCalled();
+    });
+
     it('rejects payloads that are not an app-relative path', () => {
         const bridge = makeBridge();
         const listener = vi.fn();
@@ -103,9 +159,9 @@ describe('onHostNavigate', () => {
         const listener = vi.fn();
         bridge.onHostNavigate(listener);
 
-        host.dispatchEvent(new MessageEvent('message', {
+        dispatchMessage({
             data: { type: MessageType.Context, payload: { path: '/members' } },
-        }));
+        });
 
         expect(listener).not.toHaveBeenCalled();
     });

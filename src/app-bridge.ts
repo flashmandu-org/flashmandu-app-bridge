@@ -154,12 +154,28 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
     const hostNavListeners = new Set<(path: string) => void>();
 
     /**
-     * HOST_NAVIGATE arrives off the raw `window` rather than the transport: it
-     * is a plain hint, carries no session data, and must keep working while the
-     * app is still waiting for CONTEXT. The payload is therefore treated as
-     * fully untrusted — only an app-relative path is ever handed to a listener.
+     * HOST_NAVIGATE arrives off the raw `window` rather than through the
+     * transport, but it is held to the same gate: it is accepted only from the
+     * parent window, only on the parent origin resolved at boot, and never when
+     * that origin is unknown. Fail-closed — an unguarded listener here would be
+     * the weakest door in the wall, since anything holding a handle to this
+     * window could otherwise drive the app's router.
+     *
+     * The payload itself is untrusted regardless: only an app-relative path is
+     * ever handed to a listener.
      */
     const onHostMessage = (event: MessageEvent): void => {
+        if (destroyed) {
+            return;
+        }
+        // Fail-closed: if no parent origin was resolved, accept nothing.
+        if (parentOrigin === null || event.origin !== parentOrigin) {
+            return;
+        }
+        // Only accept messages from the parent window.
+        if (parent === null || event.source !== parent) {
+            return;
+        }
         const data = event.data as { type?: string; payload?: { path?: unknown } } | null;
         if (data?.type !== MessageType.HostNavigate) {
             return;
