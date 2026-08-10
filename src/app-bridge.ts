@@ -23,6 +23,7 @@ import {
     type BridgeMessage,
     type BridgeChannel,
     type BridgeListener,
+    type ColorScheme,
     type ContextPayload,
     type HostCapabilities,
     type ModalVariant,
@@ -44,6 +45,7 @@ import {
     type Transport,
 } from './transport.js';
 import { isAppRelativePath, isHostNavigablePath, normalisePageChrome } from './page-chrome.js';
+import { normaliseColorScheme, resolveInitialColorScheme } from './theme.js';
 import {
     backoffDelayMs,
     DEFAULT_RETRY_POLICY,
@@ -105,6 +107,11 @@ export interface CreateAppBridgeOptions {
      * Normally unnecessary — the host declares it on CONTEXT.
      */
     channel?: string;
+    /**
+     * Window used to resolve the initial colour scheme (its `location` and
+     * `matchMedia`). Defaults to the real `window`. Intended for tests.
+     */
+    view?: (Window & typeof globalThis) | null;
 }
 
 /** Options for {@link AppBridge.connectExternal}. */
@@ -174,6 +181,23 @@ export interface AppBridge {
     /** Subscribe to host-driven navigation (merchant clicked a sidebar link). */
     onHostNavigate: (listener: (path: string) => void) => () => void;
     /**
+     * The colour scheme the app should render in.
+     *
+     * Never null and readable IMMEDIATELY — before `ready()` settles — because
+     * it is seeded synchronously from the embed URL fragment. That is what
+     * lets an app paint the correct theme on its first frame instead of
+     * repainting once the handshake lands.
+     */
+    readonly theme: ColorScheme;
+    /**
+     * Subscribe to colour-scheme changes. Returns an unsubscribe handle.
+     *
+     * Fires only on a genuine TRANSITION, not on subscribe: the current value
+     * is already on `bridge.theme`, and re-firing it would make every
+     * subscriber write the DOM once for nothing.
+     */
+    onTheme: (listener: (theme: ColorScheme) => void) => () => void;
+    /**
      * The current session token, refreshed through the host when it is about
      * to expire. Concurrent callers share one in-flight refresh.
      */
@@ -206,7 +230,7 @@ export interface AppBridge {
     /** Low-level message seam. See {@link BridgeChannel}. */
     readonly channel: BridgeChannel;
     /** Subscribe to a bridge event. Returns an unsubscribe handle. */
-    on: (event: 'context' | 'ready' | 'destroy', listener: BridgeListener) => () => void;
+    on: (event: 'context' | 'ready' | 'destroy' | 'theme', listener: BridgeListener) => () => void;
     /** Tear down the transport and reject any in-flight requests. */
     destroy: () => void;
 
@@ -291,6 +315,16 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
 
     let context: AppContext | null = null;
     let hostCapabilities: HostCapabilities = {};
+    /**
+     * Colour scheme. Seeded SYNCHRONOUSLY at construction from the embed URL
+     * fragment (falling back to the OS) so `bridge.theme` is already correct
+     * on the first frame, long before CONTEXT could possibly arrive.
+     *
+     * `opts.search` is a test seam for the query string; the fragment is read
+     * off the real location, which in tests is jsdom's.
+     */
+    let theme: ColorScheme = resolveInitialColorScheme(opts.view ?? (typeof window === 'undefined' ? null : window));
+    const themeListeners = new Set<(theme: ColorScheme) => void>();
     let directApiEndpoint = DEFAULT_DIRECT_API_ENDPOINT;
     /**
      * Opaque envelope channel. Echoed on every outbound message once the host
@@ -331,6 +365,17 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
                 if (contextExpiry !== null) {
                     tokenExpiresAt = contextExpiry;
                 }
+                /*
+                 * The host confirming the scheme it already put in the embed
+                 * fragment is the ordinary case, and `setTheme` no-ops on it.
+                 * It matters when the two DISAGREE — an app deep-linked with a
+                 * stale fragment, or opened from a URL the merchant bookmarked
+                 * — where CONTEXT is the fresher of the two and wins.
+                 *
+                 * A host that declares nothing leaves the fragment/OS value
+                 * standing rather than being read as "light".
+                 */
+                setTheme(normaliseColorScheme(payload.theme));
                 context = {
                     origin: payload.origin,
                     token: currentToken,
@@ -342,6 +387,7 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
                     tz: payload.tz ?? null,
                     expiresAt: contextExpiry,
                     hostCapabilities,
+                    theme,
                 };
                 // Re-announce the CURRENT capability state the moment the host
                 // declares itself ready. SET_CAPABILITIES is fire-and-forget,
@@ -486,6 +532,8 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
             handleAction(data.payload);
         } else if (data.type === MessageType.Token) {
             handleToken(data.payload);
+        } else if (data.type === MessageType.Theme) {
+            setTheme(normaliseColorScheme((data.payload as { theme?: unknown } | null)?.theme));
         }
 
         // Channel subscribers see everything that passed the gate, including
@@ -493,6 +541,35 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
         // built on this and must not need a second gate of their own.
         dispatchInbound(data.type, data.payload);
     };
+
+    /**
+     * Adopt a new colour scheme and tell subscribers.
+     *
+     * Null (host said nothing, or said something unrecognised) is a NO-OP, not
+     * a reset: silence from a host that predates this field must leave the
+     * fragment/OS value standing. Re-stating the current value is a no-op too,
+     * so a host that re-sends THEME on every render costs the app nothing.
+     *
+     * Also refreshes `context.theme` in place, so an app holding the object
+     * from `ready()` does not quietly read a stale scheme forever.
+     */
+    function setTheme(next: ColorScheme | null): void {
+        if (next === null || next === theme) {
+            return;
+        }
+        theme = next;
+        if (context !== null) {
+            context = { ...context, theme };
+        }
+        for (const listener of Array.from(themeListeners)) {
+            try {
+                listener(theme);
+            } catch {
+                /* One app's throwing listener must not starve the others. */
+            }
+        }
+        emit('theme', theme);
+    }
 
     function handleHostNavigate(payload: unknown): void {
         const p = payload as { id?: unknown; path?: unknown } | undefined;
@@ -857,6 +934,15 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
     };
 
     return {
+        get theme(): ColorScheme {
+            return theme;
+        },
+        onTheme(listener: (next: ColorScheme) => void): () => void {
+            themeListeners.add(listener);
+            return () => {
+                themeListeners.delete(listener);
+            };
+        },
         get context(): AppContext | null {
             return context;
         },
@@ -1041,7 +1127,7 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
     };
 }
 
-type BridgeEventKey = 'context' | 'ready' | 'destroy';
+type BridgeEventKey = 'context' | 'ready' | 'destroy' | 'theme';
 
 /**
  * Open a third-party consent popup and wait for the app's OWN callback page.

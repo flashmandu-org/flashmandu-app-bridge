@@ -34,6 +34,7 @@ import { createAppBridge, type AppBridge, type CreateAppBridgeOptions } from '..
 import {
     MessageType,
     type BridgeCapabilities,
+    type ColorScheme,
     type HostCapabilities,
     type HostNavigateAckPayload,
     type LoadingPayload,
@@ -115,6 +116,11 @@ export interface CreateMockHostOptions {
     capabilities?: HostCapabilities;
     /** Opaque envelope channel announced on CONTEXT. Omitted when unset. */
     channel?: string;
+    /**
+     * Colour scheme announced on CONTEXT. Omitted when unset, which is how a
+     * pre-0.3 host behaves — use that to test the OS fallback.
+     */
+    theme?: ColorScheme;
     /** Answer READY with CONTEXT automatically. Default true. */
     autoContext?: boolean;
     /** Default answer for any API call with no scripted handler. */
@@ -182,9 +188,15 @@ export interface MockHost {
         scopes: readonly string[];
         capabilities: HostCapabilities;
         directApiEndpoint: string;
+        theme: ColorScheme;
     }>) => void;
     /** Simulate a merchant clicking a command-bar action. */
     clickAction: (id: string) => void;
+    /**
+     * Simulate the merchant toggling their admin theme mid-session, which the
+     * real host answers with a THEME message.
+     */
+    setTheme: (theme: ColorScheme) => void;
     /** Simulate a sidebar click. Returns the host-allocated correlation id. */
     hostNavigate: (path: string) => number;
 
@@ -237,6 +249,7 @@ const ALL_CAPABILITIES: HostCapabilities = {
     picker: true,
     tokenRefresh: true,
     loading: true,
+    theme: true,
 };
 
 interface FakeWindow extends EventTarget {
@@ -337,6 +350,7 @@ export function createMockHost(options: CreateMockHostOptions = {}): MockHost {
         if (options.tz !== undefined) base.tz = options.tz;
         if (options.expiresAt !== undefined) base.expiresAt = options.expiresAt;
         if (options.channel !== undefined) base.channel = options.channel;
+        if (options.theme !== undefined) base.theme = options.theme;
         return { ...base, ...patch };
     }
 
@@ -539,6 +553,9 @@ export function createMockHost(options: CreateMockHostOptions = {}): MockHost {
         tokenRefreshCount: () => sent.filter((m) => m.type === MessageType.TokenRefresh).length,
 
         post,
+        setTheme(theme: ColorScheme): void {
+            post(MessageType.Theme, { theme });
+        },
         sendContext(patch): void {
             post(MessageType.Context, contextPayload(patch as Record<string, unknown> | undefined));
         },

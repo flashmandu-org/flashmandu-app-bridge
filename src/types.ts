@@ -87,6 +87,16 @@ export const MessageType = {
     PickerOpen: 'FLASHMANDU_BRIDGE:PICKER_OPEN',
     /** parent → iframe. The picker settled. */
     PickerResult: 'FLASHMANDU_BRIDGE:PICKER_RESULT',
+    /**
+     * parent → iframe. The merchant's admin colour scheme changed while the
+     * app is embedded.
+     *
+     * The INITIAL value does not travel on this message — it is on
+     * `CONTEXT.theme`, and earlier still in the embed URL fragment (see
+     * {@link THEME_FRAGMENT_KEY}) so the app can paint the right theme on the
+     * very first frame. THEME carries only subsequent transitions.
+     */
+    Theme: 'FLASHMANDU_BRIDGE:THEME',
 } as const;
 
 export type MessageTypeValue = (typeof MessageType)[keyof typeof MessageType];
@@ -124,6 +134,34 @@ export interface HostCapabilities {
     tokenRefresh?: boolean;
     /** Host draws the LOADING progress bar. */
     loading?: boolean;
+    /**
+     * Host is authoritative for the colour scheme: it puts the resolved value
+     * on `CONTEXT.theme` and posts THEME on every subsequent change.
+     *
+     * Absent means "this host has no opinion", and an app should then fall
+     * back to `prefers-color-scheme` rather than pinning light — that silence
+     * is what every pre-0.3 host says.
+     */
+    theme?: boolean;
+}
+
+/**
+ * The merchant's admin colour scheme.
+ *
+ * Deliberately only the two RESOLVED values. The host's own toggle has a third
+ * setting ("system"), but that is a host-side preference: by the time the
+ * scheme reaches the iframe the host has already resolved it against the
+ * merchant's OS, because the app cannot resolve it — an iframe's
+ * `prefers-color-scheme` reports the DEVELOPER's OS in exactly the situation
+ * this field exists to fix.
+ */
+export type ColorScheme = 'light' | 'dark';
+
+/**
+ * THEME payload (parent → iframe). Mirrors `CONTEXT.theme`.
+ */
+export interface ThemePayload {
+    theme: ColorScheme;
 }
 
 /**
@@ -148,6 +186,13 @@ export interface ContextPayload {
     expiresAt?: number | string;
     /** What the host supports. Absent = an older host that supports none of it. */
     capabilities?: HostCapabilities;
+    /**
+     * The merchant's admin colour scheme at handshake time, already resolved.
+     *
+     * Optional because a pre-0.3 host sends nothing here; absent means "not
+     * declared", which the SDK reads as "keep following the OS".
+     */
+    theme?: ColorScheme;
     /** Opaque envelope channel to echo on outbound messages. See BridgeMessage. */
     channel?: string;
     /**
@@ -476,13 +521,21 @@ export interface AppContext {
     expiresAt: number | null;
     /** What the HOST announced it can do. Never a promise about the app. */
     hostCapabilities: HostCapabilities;
+    /**
+     * The colour scheme the app should render in, resolved from (in order):
+     * the embed URL fragment, `CONTEXT.theme`, then `prefers-color-scheme`.
+     * Always a concrete value — never null — so an app can read it without a
+     * fallback of its own.
+     */
+    theme: ColorScheme;
 }
 
 /** Public events the app can subscribe to via `on()`. */
 export type BridgeEventName =
     | 'context'
     | 'ready'
-    | 'destroy';
+    | 'destroy'
+    | 'theme';
 
 /** Generic event listener. */
 export type BridgeListener = (payload: unknown) => void;

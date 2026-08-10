@@ -60,6 +60,7 @@ export type {
     BridgeEventName,
     BridgeListener,
     BridgeMessage,
+    ColorScheme,
     ContextPayload,
     HostCapabilities,
     HostNavigateAckPayload,
@@ -92,6 +93,7 @@ export type {
     ToastAction,
     ToastPayload,
     ToastVariant,
+    ThemePayload,
     TokenPayload,
     TokenRefreshPayload,
 } from './types.js';
@@ -141,3 +143,22 @@ export {
     buildAppUrl,
 } from './url-state.js';
 export type { PathChangePayload } from './url-state.js';
+
+/**
+ * Colour scheme — the host's theme, delivered to the iframe.
+ *
+ * `themeBootstrapScript()` is the piece with a hard placement requirement: it
+ * must be inlined in the served HTML, ahead of the app's own markup, or the
+ * app paints one frame in the wrong theme before any module has run.
+ */
+export {
+    applyColorScheme,
+    normaliseColorScheme,
+    prefersDarkColorScheme,
+    readThemeFromUrl,
+    resolveInitialColorScheme,
+    themeBootstrapScript,
+    THEME_ATTRIBUTE,
+    THEME_CLASS,
+    THEME_FRAGMENT_KEY,
+} from './theme.js';
