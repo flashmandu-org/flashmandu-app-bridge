@@ -68,6 +68,7 @@ export type {
     MessageTypeValue,
     ModalClosePayload,
     ModalMode,
+    ModalVariant,
     ModalOpenPayload,
     ModalResultPayload,
     NavigatePayload,

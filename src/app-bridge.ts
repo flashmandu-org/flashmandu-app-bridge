@@ -25,6 +25,7 @@ import {
     type BridgeListener,
     type ContextPayload,
     type HostCapabilities,
+    type ModalVariant,
     type PickerKind,
     type ProxyResponsePayload,
     type RequestOptions,
@@ -226,6 +227,8 @@ export interface ModalApi {
         body: string;
         confirmLabel?: string;
         cancelLabel?: string;
+        /** `danger` renders the confirm button destructively. See `modal.ts`. */
+        variant?: ModalVariant;
     }) => Promise<{ confirmed: boolean }>;
     route: (path: string) => Promise<{ confirmed: boolean }>;
     close: () => void;

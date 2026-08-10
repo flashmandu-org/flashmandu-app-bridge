@@ -348,6 +348,9 @@ export interface TokenPayload {
 /** Modal content modes (design §4.4). */
 export type ModalMode = 'message' | 'route';
 
+/** Confirm-button treatment for a `message` modal. */
+export type ModalVariant = 'default' | 'danger';
+
 /**
  * MODAL_OPEN payload (iframe → parent).
  *
@@ -367,6 +370,15 @@ export interface ModalOpenPayload {
     confirmLabel?: string;
     /** `message` mode: max 32 chars. */
     cancelLabel?: string;
+    /**
+     * `message` mode: `danger` renders the confirm button destructively.
+     *
+     * The host has always read this (`_bridge-host-overlays.blade.php` binds
+     * `variant === 'danger'` onto the confirm button); it was simply
+     * unreachable from the SDK until 0.3, so every app's delete dialog looked
+     * like a neutral one. Omitted means `default`.
+     */
+    variant?: ModalVariant;
     /** `route` mode: app-relative path opened in the host's max-modal. */
     path?: string;
 }

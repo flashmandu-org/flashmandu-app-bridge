@@ -16,6 +16,7 @@
  *   title: 'Delete map?',
  *   body: 'This cannot be undone.',
  *   confirmLabel: 'Delete',
+ *   variant: 'danger',
  * });
  * const { selections } = await bridge.picker({ kind: 'item', multiple: true });
  * ```
@@ -26,6 +27,7 @@ import { BridgeValidationError, isAppRelativePath } from './page-chrome.js';
 import {
     MessageType,
     type ModalResultPayload,
+    type ModalVariant,
     type PickerKind,
     type PickerResultPayload,
     type PickerSelection,
@@ -40,11 +42,23 @@ export const MODAL_LIMITS = {
 
 const PICKER_KINDS: readonly PickerKind[] = ['item', 'media'];
 
+const MODAL_VARIANTS: readonly ModalVariant[] = ['default', 'danger'];
+
 export interface ModalMessageInput {
     title: string;
     body: string;
     confirmLabel?: string;
     cancelLabel?: string;
+    /**
+     * `danger` makes the host render the confirm button destructively — red,
+     * the way the admin's own delete dialogs look.
+     *
+     * Validated rather than passed through: an unknown value would reach a host
+     * that treats everything except `'danger'` as default, so a typo would
+     * silently downgrade a delete confirmation to a neutral one. Better to
+     * throw at the call site.
+     */
+    variant?: ModalVariant;
 }
 
 export interface PickerInput {
@@ -137,6 +151,12 @@ export function attachModal(bridge: AppBridge): AppBridgeWithModal {
             if (input.cancelLabel !== undefined) {
                 assertMax(input.cancelLabel, MODAL_LIMITS.labelChars, 'modal.message: `cancelLabel`');
             }
+            if (input.variant !== undefined && !MODAL_VARIANTS.includes(input.variant)) {
+                throw new BridgeValidationError(
+                    `modal.message: \`variant\` must be one of ${MODAL_VARIANTS.join(', ')} ` +
+                    `(got ${String(input.variant)}).`,
+                );
+            }
 
             return openModal((id) => {
                 const payload: Record<string, unknown> = {
@@ -147,6 +167,7 @@ export function attachModal(bridge: AppBridge): AppBridgeWithModal {
                 };
                 if (input.confirmLabel !== undefined) payload.confirmLabel = input.confirmLabel;
                 if (input.cancelLabel !== undefined) payload.cancelLabel = input.cancelLabel;
+                if (input.variant !== undefined) payload.variant = input.variant;
                 return payload;
             });
         },

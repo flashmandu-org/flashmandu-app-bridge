@@ -54,6 +54,47 @@ describe('modal.message', () => {
         await pending;
     });
 
+    /*
+     * The host has always rendered a destructive confirm button off
+     * `variant === 'danger'`, but until this field existed there was no way for
+     * an app to ask for it — every delete dialog in every app looked neutral.
+     * These lock the wire shape the host reads.
+     */
+    it('sends variant: danger so the host renders a destructive confirm', async () => {
+        const pending = bridge.modal.message({
+            title: 'Delete map?',
+            body: 'Cannot be undone.',
+            confirmLabel: 'Delete map',
+            variant: 'danger',
+        });
+
+        expect(host.modalOpens()[0]).toMatchObject({ mode: 'message', variant: 'danger' });
+
+        host.answerModal({ confirmed: true });
+        await expect(pending).resolves.toEqual({ confirmed: true });
+    });
+
+    it('omits variant entirely when the caller did not ask for one', async () => {
+        const pending = bridge.modal.message({ title: 'T', body: 'B' });
+
+        // Absent, not `'default'`: the host treats anything but `'danger'` as
+        // default already, and a field nobody set does not belong on the wire.
+        expect(host.modalOpens()[0]).not.toHaveProperty('variant');
+
+        host.answerModal({ confirmed: false });
+        await pending;
+    });
+
+    it('throws on an unknown variant rather than silently downgrading it', () => {
+        // A typo'd variant would reach a host that reads everything except
+        // `'danger'` as default — a delete confirmation quietly demoted to a
+        // neutral one is exactly the failure this refuses to ship.
+        expect(() =>
+            bridge.modal.message({ title: 'T', body: 'B', variant: 'destructive' as never }),
+        ).toThrow(BridgeValidationError);
+        expect(host.modalOpens()).toHaveLength(0);
+    });
+
     it.each([
         ['title', { title: 'x'.repeat(MODAL_LIMITS.titleChars + 1), body: 'B' }],
         ['body', { title: 'T', body: 'x'.repeat(MODAL_LIMITS.bodyChars + 1) }],
