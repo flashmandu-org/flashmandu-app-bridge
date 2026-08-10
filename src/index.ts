@@ -42,6 +42,8 @@ export {
     DEFAULT_DIRECT_API_ENDPOINT,
     TOKEN_FRESHNESS_MARGIN_MS,
 } from './app-bridge.js';
+export { BridgeGraphqlError, classifyDirectApiFailure } from './graphql-error.js';
+export type { GraphqlErrorCode } from './graphql-error.js';
 export type {
     AppBridge,
     ConnectExternalOptions,
@@ -83,8 +85,12 @@ export type {
     ProxyMethod,
     ProxyRequestPayload,
     ProxyResponsePayload,
+    AppSearchResult,
     ReadyPayload,
     RequestOptions,
+    SearchCommand,
+    SearchDomain,
+    SearchProviderPayload,
     ResponseResult,
     SetCapabilitiesPayload,
     SetPagePayload,
@@ -116,6 +122,18 @@ export {
     pageChromeEquals,
     PAGE_CHROME_LIMITS,
 } from './page-chrome.js';
+
+/**
+ * Global-search contribution rules — including the platform-owned type list
+ * that IS the deduplication rule. Exported so the host, a PHP runtime and a
+ * component kit apply one copy of it rather than three drifting ones.
+ */
+export {
+    isPlatformOwnedSearchType,
+    normaliseSearchProvider,
+    PLATFORM_OWNED_SEARCH_TYPES,
+    SEARCH_PROVIDER_LIMITS,
+} from './search-provider.js';
 
 /** Retry policy. Pure functions, exported for host parity and for testing. */
 export {

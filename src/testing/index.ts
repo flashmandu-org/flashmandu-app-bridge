@@ -250,6 +250,7 @@ const ALL_CAPABILITIES: HostCapabilities = {
     tokenRefresh: true,
     loading: true,
     theme: true,
+    search: true,
 };
 
 interface FakeWindow extends EventTarget {

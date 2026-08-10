@@ -25,12 +25,14 @@ import {
     type BridgeListener,
     type ColorScheme,
     type ContextPayload,
+    type GraphqlFailure,
     type HostCapabilities,
     type ModalVariant,
     type PickerKind,
     type ProxyResponsePayload,
     type RequestOptions,
     type ResponseResult,
+    type SearchProviderPayload,
     type SetPagePayload,
     type SidebarLink,
     type ToastAction,
@@ -45,6 +47,8 @@ import {
     type Transport,
 } from './transport.js';
 import { isAppRelativePath, isHostNavigablePath, normalisePageChrome } from './page-chrome.js';
+import { normaliseSearchProvider } from './search-provider.js';
+import { BridgeGraphqlError, classifyDirectApiFailure, isRemintable } from './graphql-error.js';
 import { normaliseColorScheme, resolveInitialColorScheme } from './theme.js';
 import {
     backoffDelayMs,
@@ -178,6 +182,24 @@ export interface AppBridge {
     onAction: (listener: (id: string) => void) => () => void;
     /** Register sidebar navigation links the host should render. */
     setSidebarLinks: (links: SidebarLink[]) => void;
+    /**
+     * Register what this app contributes to the host's global (⌘K) search.
+     *
+     * Declarative and idempotent: call it once at boot, or again whenever the
+     * contribution genuinely changes. The host persists the registration, so
+     * the app's entries appear in ⌘K on every admin page — including the ones
+     * where this iframe is not mounted.
+     *
+     * Throws `BridgeValidationError` when a cap is exceeded, and specifically
+     * when a domain names a record type the PLATFORM already searches (`item`,
+     * `order`, `customer`, …). That rejection is the dedupe rule: an app that
+     * mirrors platform data over the GraphQL API has nowhere to publish its
+     * copy, so the merchant cannot be shown the same record twice. To enrich a
+     * platform record instead, return a result carrying `platformRef`.
+     *
+     * A no-op on a host that never announced `capabilities.search`.
+     */
+    setSearchProvider: (provider: SearchProviderPayload) => void;
     /** Subscribe to host-driven navigation (merchant clicked a sidebar link). */
     onHostNavigate: (listener: (path: string) => void) => () => void;
     /**
@@ -343,6 +365,33 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
      */
     let currentToken: string | null = sessionToken;
     let tokenExpiresAt: number | null = null;
+    /**
+     * WHERE the cached token came from, and the reason `graphql()` cannot just
+     * spend `currentToken`.
+     *
+     * `session_token` in the embed URL and the credential the direct endpoint
+     * wants are TWO DIFFERENT TOKENS. The URL one is the host's one-shot embed
+     * session token (`v1.exp.profile.app.scopeHash.nonce.hmac`), minted to
+     * carry the iframe from the shell to `/session/exchange`. The direct API
+     * wants a `direct_api` token — a different service, a different claim set,
+     * a different wire format — which ONLY the host can mint, through
+     * TOKEN_REFRESH.
+     *
+     * Spending the URL-seeded one on `/api/apps/graphql` is a guaranteed 401
+     * `invalid_token`, and it used to happen on every single direct call: the
+     * host's CONTEXT carries no `expiresAt`, so `tokenExpiresAt` stayed null,
+     * `tokenIsFresh()` read null as "cannot know it is stale → keep using it",
+     * and the bridge therefore NEVER fired a TOKEN_REFRESH. The direct path was
+     * permanently broken from inside a real embed while looking, from here,
+     * exactly like a working one.
+     *
+     * So provenance is tracked rather than inferred from expiry: only a token
+     * the HOST minted is a direct-API credential.
+     */
+    let tokenProvenance: 'embed-url' | 'host' = 'host';
+    if (sessionToken !== null && sessionToken !== '') {
+        tokenProvenance = 'embed-url';
+    }
     let inflightTokenRefresh: Promise<string> | null = null;
     const pendingTokens = new Map<number, {
         resolve: (token: string) => void;
@@ -459,6 +508,14 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
     const actionListeners = new Set<(id: string) => void>();
 
     /**
+     * Whether a search provider has been registered, for the capability
+     * announcement. A plain flag rather than the registration itself: the host
+     * is the store of record for WHAT was registered, and keeping a second
+     * copy here would only create something to drift.
+     */
+    let searchProviderRegistered = false;
+
+    /**
      * Tell the host what the app has actually wired up.
      *
      * Announced on CHANGE, never on a timer and never at construction: a React
@@ -478,6 +535,12 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
                 capabilities: {
                     hostNavigate: hostNavListeners.size > 0,
                     action: actionListeners.size > 0,
+                    // Included only once true. `search` is optional on
+                    // BridgeCapabilities and absence already means "not
+                    // supported", so announcing a literal false would add a
+                    // field to every existing announcement to say the thing
+                    // its silence already said.
+                    ...(searchProviderRegistered ? { search: true } : {}),
                 },
             },
         });
@@ -652,6 +715,8 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
             return;
         }
         currentToken = p.token;
+        // Host-minted: this one IS a direct-API credential.
+        tokenProvenance = 'host';
         // The host sends ISO-8601 here, passed through verbatim from the
         // refresh endpoint — NOT a ms epoch. Reading it as a number would leave
         // `tokenExpiresAt` null forever, which reads as "validity unknown" and
@@ -737,6 +802,43 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
         return refreshToken();
     }
 
+    /**
+     * The credential for the DIRECT endpoint specifically.
+     *
+     * Differs from `getSessionToken()` in one way that matters: a token seeded
+     * from the embed URL is never good enough here, however fresh it looks, so
+     * the first direct call always spends one TOKEN_REFRESH to obtain a real
+     * `direct_api` token. See `tokenProvenance`.
+     *
+     * `force` re-mints even when the cached token is fresh — used once after a
+     * 401, so a token that expired between the freshness check and the server
+     * reading it costs a retry rather than the whole call.
+     */
+    async function getDirectApiToken(force = false): Promise<string> {
+        if (!force && tokenProvenance === 'host' && tokenIsFresh()) {
+            return currentToken as string;
+        }
+        if (force) {
+            // Drop the rejected credential so a concurrent caller cannot pick
+            // it back up out of the cache while this refresh is in flight.
+            currentToken = null;
+            tokenExpiresAt = null;
+        }
+        try {
+            return await refreshToken();
+        } catch (error) {
+            throw new BridgeGraphqlError(
+                'token_refresh_failed',
+                'The host could not mint an embed token for this app, so bridge.graphql() has no ' +
+                'credential to present. The host answers TOKEN_REFRESH with `unknown_app` when the ' +
+                'embed page does not know which app is framed, and relays a refresh_failed_401/403 ' +
+                "when the merchant's session lapsed or they lost access to the app. Original: " +
+                (error instanceof Error ? error.message : String(error)),
+                { cause: error },
+            );
+        }
+    }
+
     async function proxyAttempt(input: RequestOptions): Promise<RawResult> {
         const id = transport.nextId();
         const payload = await new Promise<ProxyResponsePayload>((resolve, reject) => {
@@ -788,17 +890,26 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
         query: string,
         variables: Record<string, unknown> | undefined,
         operationName: string | undefined,
+        forceFreshToken = false,
     ): Promise<RawResult> {
         const fetchImpl = opts.fetchImpl ?? (typeof fetch !== 'undefined' ? fetch : undefined);
         if (fetchImpl === undefined) {
-            throw new Error('bridge.graphql() needs a fetch implementation; none is available.');
+            throw new BridgeGraphqlError(
+                'no_fetch',
+                'bridge.graphql() needs a fetch implementation; none is available in this runtime. ' +
+                'Pass `fetchImpl` to createAppBridge() when running outside a browser.',
+            );
         }
         const origin = context?.origin;
         if (origin === undefined || origin === '') {
-            throw new Error('bridge.graphql() called before CONTEXT resolved the platform origin.');
+            throw new BridgeGraphqlError(
+                'context_not_ready',
+                'bridge.graphql() was called before CONTEXT resolved the platform origin. ' +
+                'Await bridge.ready() first — the origin is only known once the host replies to READY.',
+            );
         }
 
-        const token = await getSessionToken();
+        const token = await getDirectApiToken(forceFreshToken);
         const url = joinOrigin(origin, directApiEndpoint);
 
         const body: Record<string, unknown> = { query };
@@ -871,15 +982,40 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
         // with `retry: true` once it carries its own idempotency key.
         const idempotent = options.retry ?? isReadOnlyDocument(query);
         let attempt = 0;
+        /**
+         * A 401 buys exactly ONE free re-mint.
+         *
+         * A token can expire between `tokenIsFresh()` saying yes and the server
+         * reading it — the margin narrows that window, it cannot close it — and
+         * the honest response to that is a fresh token, not a failure. Bounded
+         * to one so a genuinely unusable credential (wrong app, unregistered
+         * origin) surfaces as an error instead of a mint loop against a
+         * throttled endpoint.
+         */
+        let retriedAfter401 = false;
+        /** Set for exactly the one attempt that follows a 401. */
+        let forceFreshToken = false;
 
         for (;;) {
             attempt += 1;
-            const raw = await graphqlAttempt(query, variables, options.operationName);
+            const raw = await graphqlAttempt(query, variables, options.operationName, forceFreshToken);
+            forceFreshToken = false;
+
+            // Only a credential problem is worth a re-mint. `origin_mismatch`
+            // is also a 401, and a thousand fresh tokens will not fix it — the
+            // frame is simply served from an origin the install never
+            // registered, so re-minting would burn the refresh throttle to
+            // arrive at the same answer more slowly.
+            if (raw.status === 401 && !retriedAfter401 && isRemintable(raw.body)) {
+                retriedAfter401 = true;
+                forceFreshToken = true;
+                continue;
+            }
 
             // `'POST'` here is the honest HTTP method; `idempotent` is what
             // actually decides, passed as the explicit override.
             if (!shouldRetry('POST', raw.status, attempt, retryPolicy, idempotent)) {
-                return finalise(raw, attempt, 'direct');
+                return finalise(raw, attempt, 'direct', diagnose(raw));
             }
 
             await sleep(backoffDelayMs(attempt, raw.retryAfter, retryPolicy, random));
@@ -889,8 +1025,44 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
         }
     }
 
-    function finalise(raw: RawResult, attempts: number, mode: 'direct' | 'proxy'): ResponseResult {
+    /**
+     * Name the cause of a failed DIRECT attempt, for the caller's UI.
+     *
+     * The transport contract is that an HTTP-level failure is RETURNED (status
+     * and body intact) rather than thrown — a 403 carrying a GraphQL envelope
+     * and a 403 carrying middleware JSON are different things, and only the
+     * caller can decide which matters. So the diagnosis rides ALONGSIDE the
+     * result instead of replacing it: `status`/`body` are untouched, and an app
+     * that wants to say WHY has something better than the status code to say it
+     * with. Null on success, and on anything the platform did not label.
+     */
+    function diagnose(raw: RawResult): GraphqlFailure | null {
+        if (raw.status === 0) {
+            return {
+                code: 'network',
+                serverCode: null,
+                message:
+                    'The direct GraphQL request never reached the platform. Either the network ' +
+                    'failed, or the browser blocked it before it was sent: the endpoint answers ' +
+                    'CORS only for an origin some enabled app has registered, so a frame served ' +
+                    'from an unregistered origin fails the preflight and surfaces here as an ' +
+                    'opaque network error.',
+            };
+        }
+        if (raw.status === 401 || raw.status === 403) {
+            return classifyDirectApiFailure(raw.status, raw.body);
+        }
+        return null;
+    }
+
+    function finalise(
+        raw: RawResult,
+        attempts: number,
+        mode: 'direct' | 'proxy',
+        failure: GraphqlFailure | null = null,
+    ): ResponseResult {
         return {
+            failure,
             status: raw.status,
             body: raw.body,
             retryAfter: raw.retryAfter,
@@ -1021,6 +1193,27 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
                 }
             };
         },
+        setSearchProvider(provider: SearchProviderPayload): void {
+            // Validate FIRST, before the capability check. A host that has not
+            // shipped search yet is not a reason to let a malformed
+            // registration through unnoticed — the app author would then get
+            // their stack trace only on the day the host upgrades.
+            const payload = normaliseSearchProvider(provider);
+
+            if (hostCapabilities.search !== true) {
+                return;
+            }
+
+            sendEnvelope({
+                type: MessageType.SetSearchProvider,
+                payload,
+            });
+
+            if (!searchProviderRegistered) {
+                searchProviderRegistered = true;
+                announceCapabilities();
+            }
+        },
         setSidebarLinks(links: SidebarLink[]): void {
             sendEnvelope({
                 type: MessageType.SetSidebarLinks,
@@ -1058,27 +1251,36 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
             options: GraphqlOptions = {},
         ): Promise<ResponseResult> {
             if (destroyed) {
-                return Promise.reject(new Error('App bridge has been destroyed.'));
+                return Promise.reject(new BridgeGraphqlError(
+                    'bridge_destroyed',
+                    'App bridge has been destroyed, so bridge.graphql() cannot send.',
+                ));
             }
             if (typeof query !== 'string' || query.trim() === '') {
-                return Promise.reject(new Error('bridge.graphql() needs a non-empty query document.'));
+                return Promise.reject(new BridgeGraphqlError(
+                    'invalid_query',
+                    'bridge.graphql() needs a non-empty query document.',
+                ));
             }
             if (opts.disableDirectApi === true) {
-                return Promise.reject(
-                    new Error('Direct API is disabled on this bridge (`disableDirectApi`).'),
-                );
+                return Promise.reject(new BridgeGraphqlError(
+                    'direct_api_disabled',
+                    'Direct API is disabled on this bridge (`disableDirectApi` was passed to ' +
+                    'createAppBridge()). Use bridge.request() for REST reads over the proxy.',
+                ));
             }
             if (hostCapabilities.directApi !== true) {
                 // Failing loudly beats a hopeful POST: without the announcement
                 // the app's origin is very likely not on the endpoint's CORS
                 // allow-list, and the browser would surface that as an opaque
                 // network error with nothing pointing at the cause.
-                return Promise.reject(
-                    new Error(
-                        'The host did not announce `capabilities.directApi`, so bridge.graphql() is ' +
-                        'unavailable. Use bridge.request() for REST reads over the proxy.',
-                    ),
-                );
+                return Promise.reject(new BridgeGraphqlError(
+                    'capability_not_announced',
+                    'The host did not announce `capabilities.directApi`, so bridge.graphql() is ' +
+                    'unavailable. The host announces it only when it knows which app is framed; ' +
+                    'outside a real embed (a standalone tab, or a host page with no app id) there ' +
+                    'is no direct path at all. Use bridge.request() for REST reads over the proxy.',
+                ));
             }
             return graphqlWithRetry(query, variables, options);
         },

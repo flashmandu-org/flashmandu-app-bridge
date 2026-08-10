@@ -67,6 +67,15 @@ export const MessageType = {
     HostNavigateAck: 'FLASHMANDU_BRIDGE:HOST_NAVIGATE_ACK',
     /** iframe → parent. Which bridge capabilities the app has wired up. */
     SetCapabilities: 'FLASHMANDU_BRIDGE:SET_CAPABILITIES',
+    /**
+     * iframe → parent. Register what this app contributes to the host's global
+     * (⌘K) search: the record domains it owns, static command entries, and an
+     * optional endpoint the host may query live.
+     *
+     * Declarative and persisted, NOT a live request/response: the host consults
+     * the registration on admin pages where this app's iframe does not exist.
+     */
+    SetSearchProvider: 'FLASHMANDU_BRIDGE:SET_SEARCH_PROVIDER',
     /** iframe → parent. Ask for a freshly minted short-TTL session token. */
     TokenRefresh: 'FLASHMANDU_BRIDGE:TOKEN_REFRESH',
     /**
@@ -134,6 +143,13 @@ export interface HostCapabilities {
     tokenRefresh?: boolean;
     /** Host draws the LOADING progress bar. */
     loading?: boolean;
+    /**
+     * Host accepts SET_SEARCH_PROVIDER and surfaces app contributions in its
+     * global (⌘K) search. Gates `bridge.setSearchProvider()`, which is a quiet
+     * no-op without it — an older host drops the message anyway, and throwing
+     * would punish the app for the host's age.
+     */
+    search?: boolean;
     /**
      * Host is authoritative for the colour scheme: it puts the resolved value
      * on `CONTEXT.theme` and posts THEME on every subsequent change.
@@ -295,6 +311,91 @@ export interface SetSidebarLinksPayload {
 }
 
 /**
+ * A record domain the app is authoritative for.
+ *
+ * The host maintains a closed list of types IT already searches (items,
+ * orders, customers, …) and rejects a domain naming one of them, because an
+ * app's copy of a platform record — however it was obtained, GraphQL sync
+ * included — is a second copy of a row the merchant is already shown. See
+ * {@link PLATFORM_OWNED_SEARCH_TYPES} in `search-provider.ts`.
+ */
+export interface SearchDomain {
+    /** `[a-z][a-z0-9_-]*`, ≤ 32 chars, and not platform-owned. */
+    type: string;
+    /** Group heading the host renders, prefixed with the app's name. ≤ 32 chars. */
+    label: string;
+}
+
+/**
+ * A static ⌘K entry: navigation or an action, not a record.
+ *
+ * Matched by the host IN-PROCESS against the persisted registration, so these
+ * cost no network and keep working when the app's own server is down.
+ */
+export interface SearchCommand {
+    /** `[A-Za-z0-9_-]{1,32}`, unique within the app. */
+    id: string;
+    /** ≤ 48 chars. */
+    label: string;
+    /** ≤ 64 chars. */
+    subtitle?: string;
+    /** App-relative, `/^\/[A-Za-z0-9_\-/]*$/`, ≤ 200 chars. */
+    path: string;
+    /** `[a-z0-9-]+`, ≤ 48 chars. */
+    icon?: string;
+    /** Extra match terms. ≤ 8 entries of ≤ 24 chars. */
+    keywords?: string[];
+}
+
+/**
+ * SET_SEARCH_PROVIDER payload (iframe → parent).
+ *
+ * Registration, not a query. The host persists it against the install and
+ * consults it on every ⌘K — including on the many admin pages where this app's
+ * iframe is not mounted at all, which is why the contribution is declared once
+ * rather than answered live over postMessage.
+ */
+export interface SearchProviderPayload {
+    /** Record domains this app owns. Max 4. */
+    domains?: SearchDomain[];
+    /** Static entries the host matches in-process. Max 20. */
+    commands?: SearchCommand[];
+    /**
+     * Absolute https URL on the app's own server the host may POST live
+     * queries to. Null/omitted → static commands only. Requires the
+     * `receive:search` port scope, because the merchant's typed term leaves
+     * the platform.
+     */
+    endpoint?: string | null;
+}
+
+/**
+ * One live-query result, as the app's server returns it.
+ *
+ * `provenance` is absent by design: the HOST stamps it. A provenance tag the
+ * app could set is not a provenance tag.
+ */
+export interface AppSearchResult {
+    id: string;
+    /** Must match one of the app's registered {@link SearchDomain} types. */
+    type: string;
+    title: string;
+    subtitle?: string;
+    icon?: string;
+    /** App-relative path the host opens inside the app's embed shell. */
+    path: string;
+    /**
+     * "This row is ABOUT the platform's record", e.g. a map of an outlet.
+     *
+     * Never rendered as a standalone row: the host attaches it under the
+     * platform's own result, and drops it entirely when that record is not in
+     * the current result set. This is the escape hatch for enriching platform
+     * data WITHOUT duplicating it.
+     */
+    platformRef?: { type: string; id: string | number } | null;
+}
+
+/**
  * HOST_NAVIGATE payload (parent → iframe).
  *
  * `id` comes from the HOST's own counter — it is not related to the REQUEST
@@ -347,6 +448,13 @@ export interface BridgeCapabilities {
      * a button nobody is listening to is a dead button.
      */
     action: boolean;
+    /**
+     * True once the app has registered a search provider. Lets the host tell
+     * "this app contributes nothing to ⌘K" from "this app never imported the
+     * SDK", which are the same silence on the wire but different rows in the
+     * merchant's install list.
+     */
+    search?: boolean;
 }
 
 /**
@@ -576,6 +684,29 @@ export interface ResponseResult {
     attempts: number;
     /** Which path the call actually took. */
     transport: 'direct' | 'proxy';
+    /**
+     * A NAMED cause when the platform refused this call, else null.
+     *
+     * Additive, and deliberately not a replacement for `status`: a caller that
+     * only branches on the status code keeps working untouched. It exists so an
+     * app can tell a merchant WHICH thing is wrong — an unregistered origin, an
+     * expired token, a scope the install was never granted — instead of
+     * printing an HTTP number and leaving them to guess. Populated on the
+     * direct transport, where the platform labels its own refusals.
+     */
+    failure: GraphqlFailure | null;
+}
+
+/**
+ * The platform's refusal, classified. See `classifyDirectApiFailure`.
+ */
+export interface GraphqlFailure {
+    /** Stable machine code an app can branch on. */
+    code: string;
+    /** The platform's own `error` slug, when the body carried one. */
+    serverCode: string | null;
+    /** A developer-facing sentence: what happened, and what to do about it. */
+    message: string;
 }
 
 /**

@@ -89,10 +89,14 @@ describe('graphql() — the direct transport', () => {
         expect(host.graphqlCalls()[0]?.variables).toBeNull();
     });
 
-    it('presents the short-TTL session token as a bearer', async () => {
+    it('presents a HOST-MINTED short-TTL token as a bearer', async () => {
+        // Was `toBe('tok_initial')` — i.e. the embed URL's token. That assertion
+        // encoded the bug: the URL token is an embed SESSION token and the
+        // direct endpoint only accepts a `direct_api` token, so it 401'd every
+        // time. See "never spends the embed-URL session token" below.
         const bridge = await mount({ directApi: true });
         await bridge.graphql('{ me { id } }');
-        expect(host.graphqlCalls()[0]?.token).toBe('tok_initial');
+        expect(host.graphqlCalls()[0]?.token).toBe('tok_refreshed_1');
     });
 
     it('refreshes an about-to-expire token before calling', async () => {
@@ -148,11 +152,15 @@ describe('graphql() — the direct transport', () => {
 
     it.each([
         [403, { error: 'origin_not_allowed' }],
-        [401, { error: 'invalid_token' }],
         [401, { error: 'origin_mismatch' }],
     ])('returns terminal middleware failure %i %o without retrying', async (status, body) => {
         // These are middleware JSON, NOT GraphQL envelopes — which is exactly
         // why callers must branch on `status` before they reach for `.errors`.
+        //
+        // Neither of these is a CREDENTIAL problem: `origin_not_allowed` and
+        // `origin_mismatch` are both about WHERE the frame is served from, and
+        // are identical for every token this app could hold. So no re-mint —
+        // one attempt, then the honest answer.
         const bridge = await mount({ directApi: true });
         host.onGraphql(() => ({ status, body }));
 
@@ -162,6 +170,109 @@ describe('graphql() — the direct transport', () => {
         expect(result.body).toEqual(body);
         expect(result.attempts).toBe(1);
         expect(host.graphqlCalls()).toHaveLength(1);
+    });
+
+    it('re-mints ONCE on a 401 invalid_token, then reports the failure', async () => {
+        // A token can expire between the freshness check and the server reading
+        // it — the 60s margin narrows that window, it cannot close it. One free
+        // re-mint is the honest response; a second would be a mint loop against
+        // a throttled endpoint.
+        const bridge = await mount({ directApi: true });
+        host.onGraphql(() => ({ status: 401, body: { error: 'invalid_token' } }));
+
+        const result = await bridge.graphql('{ me { id } }');
+
+        expect(result.status).toBe(401);
+        expect(result.attempts).toBe(2);
+        expect(host.graphqlCalls()).toHaveLength(2);
+        expect(result.failure?.code).toBe('invalid_token');
+        expect(result.failure?.serverCode).toBe('invalid_token');
+    });
+
+    it('recovers when the re-minted token is accepted', async () => {
+        const bridge = await mount({ directApi: true });
+        let call = 0;
+        host.onGraphql(() => {
+            call += 1;
+            return call === 1
+                ? { status: 401, body: { error: 'invalid_token' } }
+                : { status: 200, body: { data: { me: { id: '1' } } } };
+        });
+
+        const result = await bridge.graphql('{ me { id } }');
+
+        expect(result.status).toBe(200);
+        expect(result.attempts).toBe(2);
+        expect(result.failure).toBeNull();
+    });
+
+    /*
+     * THE REGRESSION THIS SUITE EXISTS FOR.
+     *
+     * `session_token` in the embed URL and the credential the direct endpoint
+     * wants are two DIFFERENT tokens. The URL one is the host's one-shot embed
+     * session token (`v1.exp.profile.app.scopeHash.nonce.hmac`), minted to
+     * carry the iframe from the shell to `/session/exchange`. The direct API
+     * wants a `direct_api` token, which only the host can mint via
+     * TOKEN_REFRESH.
+     *
+     * Spending the URL one on `/api/apps/graphql` is a guaranteed 401
+     * `invalid_token` — and it used to happen on EVERY direct call, forever:
+     * the host's CONTEXT carries no `expiresAt`, so the cached expiry stayed
+     * null, `tokenIsFresh()` read null as "cannot know it is stale, keep it",
+     * and no refresh was ever fired. The direct path was permanently dead from
+     * inside a real embed while looking, from in here, exactly like a live one.
+     */
+    it('never spends the embed-URL session token on the direct endpoint', async () => {
+        host = createMockHost({ capabilities: { directApi: true }, token: 'tok_from_embed_url' });
+        const bridge = host.createBridge({ schedule: immediate, random: () => 0 });
+        await bridge.ready();
+
+        await bridge.graphql('{ me { id } }');
+
+        const calls = host.graphqlCalls();
+        expect(calls).toHaveLength(1);
+        expect(calls[0]?.token).not.toBe('tok_from_embed_url');
+        expect(calls[0]?.token).toMatch(/^tok_refreshed_/);
+        // Exactly one refresh: the URL-seeded token forces the first mint, and
+        // the host-minted one is then cached like any other.
+        expect(host.tokenRefreshCount()).toBe(1);
+    });
+
+    it('reuses the host-minted token across subsequent direct calls', async () => {
+        const bridge = await mount({ directApi: true });
+
+        await bridge.graphql('{ a { id } }');
+        await bridge.graphql('{ b { id } }');
+
+        expect(host.tokenRefreshCount()).toBe(1);
+        const calls = host.graphqlCalls();
+        expect(calls[0]?.token).toBe(calls[1]?.token);
+    });
+
+    it('names the cause of a refusal instead of only its status code', async () => {
+        const bridge = await mount({ directApi: true });
+        host.onGraphql(() => ({ status: 403, body: { error: 'origin_not_allowed' } }));
+
+        const result = await bridge.graphql('{ me { id } }');
+
+        expect(result.failure?.code).toBe('origin_not_allowed');
+        expect(result.failure?.message).toMatch(/not registered by any installed app/);
+    });
+
+    it('reports a blocked or failed fetch as a network failure, with the CORS hint', async () => {
+        host = createMockHost({ capabilities: { directApi: true } });
+        const bridge = host.createBridge({
+            schedule: immediate,
+            fetchImpl: (() => Promise.reject(new Error('offline'))) as unknown as typeof fetch,
+        });
+        await bridge.ready();
+
+        const result = await bridge.graphql('{ me { id } }');
+
+        expect(result.status).toBe(0);
+        expect(result.failure?.code).toBe('network');
+        expect(result.failure?.message).toMatch(/preflight/);
     });
 
     it('passes a 200 field-level error envelope through untouched', async () => {
