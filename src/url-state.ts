@@ -48,6 +48,14 @@ export const BRIDGE_RESERVED_PARAMS: readonly string[] = [
     'target',
     'locale',
     'embed',
+    // The signed-embed-URL trio. These were missing, so an app's every
+    // navigation mirrored them into the merchant's address bar:
+    //   ?path=/maps&expires_at=1786036488&resource_id=&sig=d04207f7…
+    // `sig` is the HMAC over the embed URL — transport plumbing, and something
+    // the developer docs promise never reaches the parent address bar.
+    'expires_at',
+    'resource_id',
+    'sig',
     // The host's own carrier for the app path — reflecting it back would nest.
     'path',
 ];

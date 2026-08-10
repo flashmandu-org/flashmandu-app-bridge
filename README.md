@@ -11,7 +11,11 @@ same-origin `/api/apps/proxy` route under the **merchant's** session.
 
 - Zero runtime dependencies.
 - ESM + CJS + TypeScript declarations.
-- ~3KB minified, browser-only.
+- ~5KB minified+gzipped for the core entry, browser-only. Modal/picker and the
+  mock host are separate entries that tree-shake out when unused.
+
+**Protocol v2 — no backwards compatibility.** `SET_TITLE` is gone, folded into
+`SET_PAGE`. `setTitle()` and the `useBridgeTitle` hook are deleted with it.
 
 ## Install
 
@@ -34,15 +38,32 @@ const ctx = await bridge.ready();
 console.log('Embedded in', ctx.origin, 'as app', ctx.appId);
 
 // Read through the proxy — the host authenticates server-side.
+// REST, over the host proxy — always available.
 const me = await bridge.request({ method: 'GET', path: 'me' });
-const orders = await bridge.request({
-  method: 'GET',
-  path: 'orders',
-  body: { location_ids: [1, 2] },
-});
+
+// GraphQL, straight to the platform — when the host announces directApi.
+const { body } = await bridge.graphql(
+  'query Orders($ids: [ID!]) { orders(locationIds: $ids) { id total } }',
+  { ids: ['1', '2'] },
+);
 
 bridge.toast('Saved!', 'success');
-bridge.setTitle('Orders · My App');
+
+// Page chrome: breadcrumbs, command-bar actions, dirty state — one message.
+bridge.setPage({
+  title: 'Orders',
+  crumbs: [{ label: 'Orders', path: '/orders' }, { label: '#1043' }],
+  actions: [{ id: 'save', label: 'Save', variant: 'primary', icon: 'check' }],
+  dirty: false,
+});
+bridge.onAction((id) => { if (id === 'save') save(); });
+
+// Progress bar under the host command bar.
+bridge.loading(true);
+try { await save(); } finally { bridge.loading(false); }
+
+// Toast with an action button.
+bridge.toast('Order saved', { variant: 'success', action: { label: 'View', path: '/orders/1043' } });
 ```
 
 ## What it does
@@ -65,7 +86,7 @@ After `ready()`:
   monotonic `id` and returns a Promise that settles when the parent posts the
   matching `FLASHMANDU_BRIDGE:RESPONSE` (correlated by `id`). A transport
   failure comes back as `{ status: 0 }`.
-- `toast(message, variant?)`, `navigate(href)`, and `setTitle(title)` are
+- `toast(message, variantOrOptions?)` and `navigate(href)` are
   fire-and-forget notifications to the shell.
 - `setSidebarLinks(links)` registers the app's own navigation in the host
   sidebar, and `onHostNavigate(listener)` receives the merchant's clicks on
@@ -197,13 +218,173 @@ repo. Wire format is `{ type: string, payload?: ... }`.
 | parent → iframe  | `FLASHMANDU_BRIDGE:CONTEXT`     | `{ origin, profile?, locale?, tz?, scopes?, target?, expiresAt? }` |
 | iframe → parent  | `FLASHMANDU_BRIDGE:REQUEST`     | `{ id, method: 'GET'\|'POST', path, body? }`                       |
 | parent → iframe  | `FLASHMANDU_BRIDGE:RESPONSE`    | `{ id, status, body }`                                             |
-| iframe → parent  | `TOAST`                         | `{ message, variant? }`                                            |
+| iframe → parent  | `TOAST`                         | `{ message, variant?, action?: { label, path } }`                  |
 | iframe → parent  | `NAVIGATE`                      | `{ href }`                                                         |
-| iframe → parent  | `FLASHMANDU_BRIDGE:SET_TITLE`   | `{ title }`                                                        |
+| iframe → parent  | `FLASHMANDU_BRIDGE:SET_PAGE`    | `{ title?, crumbs[], actions[], dirty }`                           |
+| parent → iframe  | `FLASHMANDU_BRIDGE:ACTION`      | `{ id }`                                                           |
+| iframe → parent  | `FLASHMANDU_BRIDGE:LOADING`     | `{ active }`                                                       |
 | iframe → parent  | `FLASHMANDU_BRIDGE:SET_SIDEBAR_LINKS` | `{ links: [{ label, path, icon? }] }`                        |
 | parent → iframe  | `FLASHMANDU_BRIDGE:HOST_NAVIGATE` | `{ id, path }`                                                   |
 | iframe → parent  | `FLASHMANDU_BRIDGE:HOST_NAVIGATE_ACK` | `{ id, path }`                                               |
-| iframe → parent  | `FLASHMANDU_BRIDGE:SET_CAPABILITIES` | `{ capabilities: { hostNavigate } }`                          |
+| iframe → parent  | `FLASHMANDU_BRIDGE:SET_CAPABILITIES` | `{ capabilities: { hostNavigate, action } }`                  |
+| iframe → parent  | `FLASHMANDU_BRIDGE:TOKEN_REFRESH` | `{ id }`                                                         |
+| parent → iframe  | `FLASHMANDU_BRIDGE:TOKEN`       | `{ id?, token, expiresAt?, error? }`                               |
+| iframe → parent  | `FLASHMANDU_BRIDGE:MODAL_OPEN`  | `{ id, mode: 'message'\|'route', title?, body?, confirmLabel?, cancelLabel?, path? }` |
+| iframe → parent  | `FLASHMANDU_BRIDGE:MODAL_CLOSE` | `{ id? }`                                                          |
+| parent → iframe  | `FLASHMANDU_BRIDGE:MODAL_RESULT`| `{ id?, confirmed, error? }`                                       |
+| iframe → parent  | `FLASHMANDU_BRIDGE:PICKER_OPEN` | `{ id, kind: 'item'\|'media', multiple?, query? }`                 |
+| parent → iframe  | `FLASHMANDU_BRIDGE:PICKER_RESULT` | `{ id?, cancelled, selections[], error? }`                       |
+
+`CONTEXT` additionally carries `capabilities` (what the HOST can do:
+`directApi`, `modal`, `picker`, `tokenRefresh`, `loading`), an optional
+`directApiEndpoint`, and an optional opaque `channel` the SDK echoes on every
+outbound envelope.
+
+### `SET_PAGE` — the page chrome, in one message
+
+```jsonc
+{
+  "type": "FLASHMANDU_BRIDGE:SET_PAGE",
+  "payload": {
+    "title": "Kathmandu",                                  // optional, <=120 chars AFTER trim
+    "crumbs": [ { "label": "Maps", "path": "/maps" },      // <=5, last = current page
+                { "label": "Kathmandu" } ],
+    "actions": [ { "id": "save", "label": "Save",          // <=4
+                   "variant": "primary", "icon": "check",
+                   "disabled": false, "loading": false } ],
+    "dirty": false                                          // REQUIRED, real boolean
+  }
+}
+```
+
+The host enforces every cap with a **whole-payload rejection** — unlike
+`SET_SIDEBAR_LINKS`, a bad entry does not get individually dropped, because a
+partial breadcrumb lies about where the merchant is. So the SDK validates the
+same rules client-side and **throws `BridgeValidationError`** rather than
+posting something that will silently vanish:
+
+| Field | Rule |
+| --- | --- |
+| `dirty` | Required. Must be a real `boolean`. |
+| `crumbs` | At most 5. `label` non-empty, ≤48 chars. |
+| `crumbs[].path` | Must match `/^\/[A-Za-z0-9_\-/]*$/` and be ≤200 chars. No query, fragment, dot segments or percent-encoding. |
+| `actions` | At most 4. |
+| `actions[].id` | `/^[A-Za-z0-9_-]{1,32}$/`, **unique within the payload**. |
+| `actions[].label` | Non-empty, ≤48 chars. |
+| `actions[].variant` | `primary` \| `ghost` \| `danger`. |
+| `actions[].disabled` / `.loading` | Boolean when present. |
+| `actions[].icon` | Allow-list: `check`, `plus`, `trash`, `arrow-path`, `pencil-square`, `arrow-down-tray`. An **unknown icon is not an error** — the host renders no icon. The SDK passes it through and warns once. |
+
+**Crumb clicks are not a new message.** The host renders crumbs as anchors and
+routes clicks through the existing `HOST_NAVIGATE` + ack path. An app whose
+crumbs carry a `path` must therefore register `onHostNavigate` (announcing
+`SET_CAPABILITIES { hostNavigate: true }`) or every crumb click is a full page
+reload — exactly the same rule as sidebar links.
+
+### `ACTION` — a bar button was clicked
+
+```jsonc
+{ "type": "FLASHMANDU_BRIDGE:ACTION", "payload": { "id": "save" } }
+```
+
+Handle it and re-send `SET_PAGE` with `loading: true` on that action while the
+work runs:
+
+```ts
+bridge.onAction(async (id) => {
+  if (id !== 'save') return;
+  bridge.setPage({ ...chrome, actions: [{ ...saveAction, loading: true }] });
+  await save();
+  bridge.setPage({ ...chrome, dirty: false });
+});
+```
+
+`onAction` is what announces `SET_CAPABILITIES { action: true }`; the host uses
+it to decide whether a bar button may be rendered at all, since a button nobody
+is listening to is a dead button.
+
+### `LOADING` — the progress bar
+
+```jsonc
+{ "type": "FLASHMANDU_BRIDGE:LOADING", "payload": { "active": true } }
+```
+
+The host throttles to one state flip per 100ms — a flip inside the window is
+**deferred, not dropped** (last writer wins) — and auto-clears after 15s as a
+stuck-app guard. Always pair it in a `finally`.
+
+### Token refresh
+
+`getSessionToken()` returns the cached embed token while more than 60s of
+validity remains, and otherwise posts `TOKEN_REFRESH` and awaits the host's
+`TOKEN`. **Concurrent callers share one in-flight promise** — three widgets
+mounting at once produce one refresh, not three.
+
+`TOKEN.expiresAt` is **ISO-8601**, passed through verbatim from the host's
+refresh endpoint (a numeric ms epoch is also accepted). `TOKEN { id, error }`
+is a **terminal** failure — `refresh_failed_401|403|404|419|429`,
+`refresh_malformed`, `network_error`, `unknown_app` — and the SDK rejects
+rather than retrying.
+
+Like every non-`READY` message, `TOKEN_REFRESH` carries the envelope `channel`;
+the host drops a mismatched one, and a dropped refresh presents as a hang
+rather than an error.
+
+### Two API surfaces, two protocols
+
+They are **not** interchangeable, which is why they are separate methods:
+
+| | `bridge.request()` | `bridge.graphql()` |
+| --- | --- | --- |
+| Transport | postMessage → host `/api/apps/proxy` | direct `fetch` to `/api/apps/graphql` |
+| Protocol | REST over a five-path allow-list | real GraphQL (`{ query, variables, operationName }`) |
+| Auth | merchant session, host-side | `Authorization: Bearer <session token>`, `credentials: 'omit'` |
+| Availability | always | requires `CONTEXT.capabilities.directApi` |
+
+The direct endpoint is Lighthouse's `GraphQLController` mounted directly, not a
+twin of the proxy — posting a `{method, path, body}` envelope at it fails. And
+because the app's origin must be on the endpoint's CORS allow-list, `graphql()`
+**rejects with a clear error** when the host did not announce `directApi`
+(which is what happens when it cannot resolve an app id) rather than emitting a
+request that surfaces as an opaque network error. Use `request()` there.
+
+The app's long-lived `api_token` is **rejected** by the direct endpoint whenever
+an `Origin` header is present — only `getSessionToken()` output works from a
+browser. `getSessionToken()` is called for you.
+
+### Branch on HTTP status BEFORE parsing a GraphQL response
+
+Field-level failures and transport failures do not share a body shape:
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| `200` | `{ data }` or `{ errors: [{ extensions: { code: 'SCOPE_DENIED', scope } }] }` | **A scope denial is a 200.** Read `body.errors`. |
+| `403` | `{ error: 'origin_not_allowed' }` | Origin registered by no installed app. Terminal. |
+| `401` | `{ error: 'invalid_token' }` | Bad HMAC / expired / disabled install — or an `api_token` sent with an `Origin`. Terminal. |
+| `401` | `{ error: 'origin_mismatch' }` | Valid token, wrong app's origin. Terminal. |
+| `429` | throttle body | `Retry-After` + `X-RateLimit-*`. Retried for reads. |
+
+`result.body` is always the **whole** envelope, never just `data`: a partial
+success carries both halves.
+
+### Retry and rate limits
+
+- `request()` — idempotent **GET**s auto-retry on `429`/`503` with jittered
+  exponential backoff (full jitter), max 3 attempts, honouring `Retry-After`.
+  **POSTs are never auto-retried.**
+- `graphql()` — every call is an HTTP POST, so the **operation** decides, not
+  the method: a document containing no `mutation` and no `subscription` is
+  retried like a GET; anything else never is. The check scans the whole
+  document, because a multi-operation document ships its mutation text even
+  when `operationName` names the query.
+- Either can be overridden per call with `retry: true | false` — use `true`
+  only when the write carries its own idempotency key.
+- `401`/`403` are terminal and never retried.
+
+Every result carries `status`, `body`, `retryAfter`, `remaining`, `limit`,
+`reset`, `attempts` and `transport`. `limit`/`reset` are direct-only (from
+`X-RateLimit-Limit`/`-Reset`, exposed via CORS); the proxy does not forward
+them and reports `null`.
 
 ### Host-driven navigation and the ack
 
@@ -318,17 +499,168 @@ scope checks. A path not in the allowlist returns `{ status: 404 }`.
 ```ts
 interface AppBridge {
   readonly context: AppContext | null;
+  readonly hostCapabilities: HostCapabilities;
+  readonly channel: BridgeChannel;          // low-level post/subscribe seam
+
   ready(): Promise<AppContext>;
-  toast(message: string, variant?: 'default'|'success'|'error'|'warning'|'info'): void;
+
+  // Chrome
+  setPage(page: { title?: string; crumbs: PageCrumb[]; actions: PageAction[]; dirty: boolean }): void;
+  onAction(listener: (id: string) => void): () => void;
+  loading(active: boolean): void;
+
+  // Shell
+  toast(message: string, variantOrOptions?: ToastVariant | { variant?: ToastVariant; action?: { label: string; path: string } }): void;
   navigate(href: string): void;
-  setTitle(title: string): void;
   setSidebarLinks(links: Array<{ label: string; path: string; icon?: string }>): void;
   onHostNavigate(listener: (path: string) => void): () => void;
-  request(input: { method: 'GET'|'POST'; path: string; body?: Record<string, unknown> | null }): Promise<{ status: number; body: unknown }>;
+
+  // Data
+  getSessionToken(): Promise<string>;       // single-flight refresh
+
+  // REST, over the postMessage proxy. Always available.
+  request(input: {
+    method: 'GET' | 'POST';
+    path: string;
+    body?: Record<string, unknown> | null;
+    retry?: boolean;
+  }): Promise<ResponseResult>;
+
+  // GraphQL, direct. Requires CONTEXT.capabilities.directApi.
+  graphql(
+    query: string,
+    variables?: Record<string, unknown>,
+    options?: { operationName?: string; retry?: boolean },
+  ): Promise<ResponseResult>;
+
+  // where ResponseResult = {
+  //   status: number; body: unknown;         // body = the WHOLE GraphQL envelope
+  //   retryAfter: number | null; remaining: number | null;
+  //   limit: number | null; reset: number | null;   // direct transport only
+  //   attempts: number; transport: 'direct' | 'proxy';
+  // }
+
+  // External accounts
+  connectExternal(url: string, options?: {
+    timeoutMs?: number;
+    allowedOrigins?: readonly string[];
+    features?: string;
+  }): Promise<{ connected: boolean; detail?: unknown }>;
+
   on(event: 'context'|'ready'|'destroy', listener: (payload: unknown) => void): () => void;
   destroy(): void;
+
+  modal?: ModalApi;    // installed by attachModal()
+  picker?: PickerApi;  // installed by attachModal()
 }
 ```
+
+### `@flashmandu/app-bridge/modal` — host modal + resource picker
+
+A separate entry so an app that never opens a modal ships none of it.
+`attachModal` mutates and returns the same bridge instance:
+
+```ts
+import { createAppBridge } from '@flashmandu/app-bridge';
+import { attachModal } from '@flashmandu/app-bridge/modal';
+
+const bridge = attachModal(createAppBridge());
+
+const { confirmed } = await bridge.modal.message({
+  title: 'Delete map?',        // <=80 chars
+  body: 'This cannot be undone.', // <=500 chars
+  confirmLabel: 'Delete',      // <=32 chars
+  cancelLabel: 'Keep',         // <=32 chars
+});
+
+await bridge.modal.route('/maps/9/edit');   // host max-modal at an app route
+
+const { cancelled, selections } = await bridge.picker({
+  kind: 'item',      // 'item' | 'media'
+  multiple: true,
+  query: 'tea',
+});
+// selections: [{ id, label, thumbnail?, meta? }] — summaries, never full models
+```
+
+Caps are validated client-side and throw `BridgeValidationError`, mirroring the
+host. One modal and one picker at a time; a second `open` rejects rather than
+hanging (the host drops it). A picker refused for a missing scope resolves
+`{ cancelled: true, selections: [], error: 'scope' }`.
+
+### `@flashmandu/app-bridge/react` — `usePageChrome`
+
+```tsx
+import { usePageChrome, useBridgeLoading } from '@flashmandu/app-bridge/react';
+
+usePageChrome({
+  title: 'Kathmandu',
+  crumbs: [{ label: 'Maps', path: '/maps' }, { label: 'Kathmandu' }],
+  actions: [
+    { id: 'save', label: 'Save', variant: 'primary', icon: 'check',
+      loading: saving, onSelect: save },
+  ],
+  dirty: form.isDirty,
+});
+
+useBridgeLoading(isFetching);
+```
+
+Safe to call with fresh object/array literals every render: the hook diffs
+structurally and posts only when something actually changed. `onSelect` is
+local — it never goes on the wire; the hook keeps the id → handler map and
+routes `ACTION` for you.
+
+### `@flashmandu/app-bridge/testing` — `createMockHost()`
+
+An in-memory implementation of the host half of the protocol. Vitest-first,
+fully synchronous, no fake timers required.
+
+```ts
+import { createMockHost } from '@flashmandu/app-bridge/testing';
+
+const host = createMockHost();          // installs a fake window; call host.restore() after
+const bridge = host.createBridge();     // READY is answered with CONTEXT immediately
+
+bridge.setPage({ crumbs: [{ label: 'Maps' }], actions: [], dirty: false });
+expect(host.lastPage()?.crumbs).toEqual([{ label: 'Maps' }]);
+
+bridge.onAction((id) => saved.push(id));
+host.clickAction('save');
+
+host.stubSequence('GET', 'orders', [{ status: 429 }, { status: 200, body: [] }]);
+const result = await bridge.request({ method: 'GET', path: 'orders' });
+expect(result.attempts).toBe(2);
+```
+
+Recorders: `pages()`, `lastPage()`, `toasts()`, `loadingStates()`,
+`navigations()`, `sidebarLinks()`, `announcements()`, `acks()`, `modalOpens()`,
+`pickerOpens()`, `tokenRefreshCount()`, `messagesOf(type)`, `sent`.
+Scripting: `clickAction`, `hostNavigate`, `sendContext`, `post`, `stub`,
+`stubSequence`, `onApiCall`, `sendToken`, `failToken`, `autoToken`,
+`answerModal`, `answerPicker`, `completeExternal`, `closePopup`.
+
+### Connecting external accounts
+
+`connectExternal` opens a popup on the third party, and waits for **the app's
+own callback page** (its origin, not the platform's) to post completion back to
+the opener. The platform is never involved and never sees a third-party token.
+
+```ts
+// In the app: start the flow.
+const { connected } = await bridge.connectExternal(
+  `https://www.facebook.com/v19.0/dialog/oauth?client_id=…&redirect_uri=${cb}`,
+);
+
+// In the app's own /oauth/callback page, after its backend exchanged the code:
+window.opener?.postMessage({ connected: true }, window.location.origin);
+window.close();
+```
+
+A closed popup rejects; so does a blocked popup and a timeout (default 3
+minutes). Only `event.source === popup` **and** an origin on the allowlist
+(default: the app's own origin) is accepted, so a third-party consent page
+cannot fake a completion.
 
 The host-navigation payload types are exported too, for hosts and for apps that
 assert on the wire format. Both carry the correlation `id`; the SDK echoes the
@@ -337,7 +669,7 @@ one it was given:
 ```ts
 interface HostNavigatePayload    { id: number; path: string }  // parent → iframe
 interface HostNavigateAckPayload { id: number; path: string }  // iframe → parent
-interface BridgeCapabilities     { hostNavigate: boolean }
+interface BridgeCapabilities     { hostNavigate: boolean; action: boolean }
 interface SetCapabilitiesPayload { capabilities: BridgeCapabilities }  // iframe → parent
 ```
 
@@ -369,7 +701,7 @@ place both repos agree on.
 // restated once on CONTEXT. Idempotent state — the same flag may arrive twice.
 {
   "type": "FLASHMANDU_BRIDGE:SET_CAPABILITIES",
-  "payload": { "capabilities": { "hostNavigate": true } }
+  "payload": { "capabilities": { "hostNavigate": true, "action": false } }
 }
 ```
 

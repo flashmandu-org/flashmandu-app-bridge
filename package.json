@@ -1,6 +1,6 @@
 {
   "name": "@flashmandu/app-bridge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "In-iframe App Bridge SDK for Flashmandu embedded apps. Drives the embedded app from inside the platform's iframe via postMessage.",
   "license": "proprietary",
   "author": "Flashmandu <engineering@flashmandu.com>",
@@ -33,6 +33,16 @@
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
     },
+    "./modal": {
+      "types": "./dist/modal.d.ts",
+      "import": "./dist/modal.js",
+      "require": "./dist/modal.cjs"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js",
+      "require": "./dist/testing/index.cjs"
+    },
     "./react": {
       "types": "./dist/react/index.d.ts",
       "import": "./dist/react/index.js",
@@ -59,9 +69,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepublishOnly": "npm run clean && npm run build && npm run verify:exports && npm run verify:framework-free",
+    "prepublishOnly": "npm run clean && npm run build && npm run verify:exports && npm run verify:framework-free && npm run size",
     "verify:exports": "node scripts/verify-exports.mjs",
-    "verify:framework-free": "node scripts/verify-framework-free.mjs"
+    "verify:framework-free": "node scripts/verify-framework-free.mjs",
+    "size": "node scripts/check-size.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

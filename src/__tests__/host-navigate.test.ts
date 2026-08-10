@@ -388,7 +388,7 @@ describe('SET_CAPABILITIES', () => {
         expect(announcements()).toEqual([{
             data: {
                 type: MessageType.SetCapabilities,
-                payload: { capabilities: { hostNavigate: true } },
+                payload: { capabilities: { hostNavigate: true, action: false } },
             },
             targetOrigin: PARENT_ORIGIN,
         }]);
@@ -457,7 +457,7 @@ describe('SET_CAPABILITIES', () => {
 
         const payload = announcements()[0]?.data.payload as { capabilities: Record<string, unknown> };
         expect(payload.capabilities).toBeTypeOf('object');
-        expect(payload.capabilities).toEqual({ hostNavigate: true });
+        expect(payload.capabilities).toEqual({ hostNavigate: true, action: false });
     });
 });
 

@@ -33,7 +33,7 @@ import {
     type ProxyResponsePayload,
 } from './types.js';
 
-const SDK_VERSION = '0.1.0';
+const SDK_VERSION = '0.3.0';
 
 /** Resolve the parent origin from the embed URL or a static allowlist. */
 export function resolveParentOrigin(

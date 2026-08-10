@@ -1,8 +1,9 @@
 /**
  * @flashmandu/app-bridge/react — React hooks for the App Bridge SDK.
  *
- * Provides useAppBridge, useProfileId, useToast, useBridgeTitle hooks
- * that work both embedded (inside Flashmandu iframe) and standalone (dev).
+ * Provides useAppBridge, useProfileId and useToast, which work both embedded
+ * (inside the Flashmandu iframe) and standalone (dev). Page chrome lives in
+ * `use-page-chrome.ts` — `useBridgeTitle` is gone with SET_TITLE.
  */
 'use client';
 
@@ -11,6 +12,7 @@ import {
   createAppBridge,
   type AppBridge,
   type AppContext,
+  type ToastOptions,
   type ToastVariant,
 } from '../index.js';
 
@@ -156,23 +158,21 @@ export function useProfileId(): BridgeStatus {
   return { status: 'ready', profileId: b.profileId, embedded: b.embedded, ctx: b.ctx };
 }
 
-/** Toast helper — uses host shell when embedded, console otherwise. */
-export function useToast(): (message: string, variant?: ToastVariant) => void {
-  return (message, variant = 'default') => {
+/**
+ * Toast helper — uses host shell when embedded, console otherwise.
+ *
+ * The second argument accepts either a bare variant (the v1 shape) or the
+ * options object, which is how a toast gets its action button.
+ */
+export function useToast(): (message: string, variantOrOptions?: ToastVariant | ToastOptions) => void {
+  return (message, variantOrOptions = 'default') => {
     const bridge = bridgeSingleton;
     if (bridge && typeof window !== 'undefined' && window.self !== window.top) {
-      bridge.toast(message, variant);
+      bridge.toast(message, variantOrOptions);
     } else {
+      const variant = typeof variantOrOptions === 'string' ? variantOrOptions : variantOrOptions.variant;
       // eslint-disable-next-line no-console
-      console.log(`[toast:${variant}]`, message);
+      console.log(`[toast:${variant ?? 'default'}]`, message);
     }
   };
-}
-
-/** Keep the host's tab title in sync with the in-app page. */
-export function useBridgeTitle(title: string): void {
-  useEffect(() => {
-    if (typeof window === 'undefined' || window.self === window.top) return;
-    bridgeSingleton?.setTitle(title);
-  }, [title]);
 }

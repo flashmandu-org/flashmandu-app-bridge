@@ -21,7 +21,11 @@ import { defineConfig } from 'tsup';
  */
 export default defineConfig([
     {
-        entry: ['src/index.ts'],
+        // Core + the two optional framework-free entries. They live in the same
+        // pass so tsup emits ONE shared chunk for the code they have in common
+        // (types, page-chrome) instead of duplicating it into three bundles.
+        // An app that never imports `/modal` or `/testing` never loads them.
+        entry: ['src/index.ts', 'src/modal.ts', 'src/testing/index.ts'],
         format: ['esm', 'cjs'],
         dts: true,
         clean: true,
