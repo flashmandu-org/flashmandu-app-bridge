@@ -15,3 +15,6 @@
  */
 
 export { UrlSync } from './url-sync.js';
+
+export { createOAuthRoutes, createRevalidateHandler, createWebhookRoute } from './routes.js';
+export type { CreateWebhookRouteOptions, OAuthRoutes, WebhookRoute } from './routes.js';
