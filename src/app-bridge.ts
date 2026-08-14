@@ -50,6 +50,7 @@ import { isAppRelativePath, isHostNavigablePath, normalisePageChrome } from './p
 import { normaliseSearchProvider } from './search-provider.js';
 import { BridgeGraphqlError, classifyDirectApiFailure, isRemintable } from './graphql-error.js';
 import { normaliseColorScheme, resolveInitialColorScheme } from './theme.js';
+import { applyStyleTokens, cacheStyleTokens, readStyleRevFromUrl } from './style.js';
 import {
     backoffDelayMs,
     DEFAULT_RETRY_POLICY,
@@ -116,6 +117,16 @@ export interface CreateAppBridgeOptions {
      * `matchMedia`). Defaults to the real `window`. Intended for tests.
      */
     view?: (Window & typeof globalThis) | null;
+    /**
+     * Auto-apply Style Surface token pushes (`CONTEXT.styleTokens` and every
+     * `STYLE_TOKENS` message) as CSS custom properties on the document root.
+     * Default `true`. Set `false` for an app that drives a canvas/WebGL
+     * surface and wants to read the resolved values itself — via
+     * `bridge.styleTokens` / `onStyleTokens()`, or `@flashmandu/app-bridge-ui`'s
+     * `useStyleSurface()` — instead of having them painted onto the DOM
+     * (design §3.4).
+     */
+    applyStyleTokens?: boolean;
 }
 
 /** Options for {@link AppBridge.connectExternal}. */
@@ -220,6 +231,20 @@ export interface AppBridge {
      */
     onTheme: (listener: (theme: ColorScheme) => void) => () => void;
     /**
+     * The currently known Style Surface token map. Empty object until a
+     * CONTEXT or STYLE_TOKENS push resolves one — never undefined. See
+     * {@link CreateAppBridgeOptions.applyStyleTokens} for whether this is
+     * ALSO being painted onto the DOM automatically.
+     */
+    readonly styleTokens: Record<string, string>;
+    /**
+     * Subscribe to Style Surface token updates. Fires with the full merged map
+     * on every CONTEXT resolution and every STYLE_TOKENS push — not just the
+     * delta — so a late subscriber never has to reconstruct history. Returns
+     * an unsubscribe handle.
+     */
+    onStyleTokens: (listener: (vars: Record<string, string>) => void) => () => void;
+    /**
      * The current session token, refreshed through the host when it is about
      * to expire. Concurrent callers share one in-flight refresh.
      */
@@ -252,7 +277,7 @@ export interface AppBridge {
     /** Low-level message seam. See {@link BridgeChannel}. */
     readonly channel: BridgeChannel;
     /** Subscribe to a bridge event. Returns an unsubscribe handle. */
-    on: (event: 'context' | 'ready' | 'destroy' | 'theme', listener: BridgeListener) => () => void;
+    on: (event: 'context' | 'ready' | 'destroy' | 'theme' | 'styleTokens', listener: BridgeListener) => () => void;
     /** Tear down the transport and reject any in-flight requests. */
     destroy: () => void;
 
@@ -347,6 +372,63 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
      */
     let theme: ColorScheme = resolveInitialColorScheme(opts.view ?? (typeof window === 'undefined' ? null : window));
     const themeListeners = new Set<(theme: ColorScheme) => void>();
+    /**
+     * Style Surface token map, merged from CONTEXT and every STYLE_TOKENS push
+     * since. Unlike `theme`, there is no synchronous pre-CONTEXT value here:
+     * the pre-paint FOUC fix for this channel is `styleBootstrapScript()`
+     * writing straight to the DOM before any module (this one included) has
+     * loaded, not a value this module could seed itself with.
+     */
+    let styleTokens: Record<string, string> = {};
+    const styleTokensListeners = new Set<(vars: Record<string, string>) => void>();
+    /** Default true — see {@link CreateAppBridgeOptions.applyStyleTokens}. */
+    const shouldApplyStyleTokens = opts.applyStyleTokens !== false;
+
+    /** Resolve the document to paint Style Surface tokens onto. SSR-safe. */
+    function resolveStyleDocument(): Document | null {
+        const view = opts.view ?? (typeof window === 'undefined' ? null : window);
+        const fromView = (view as unknown as { document?: Document } | null | undefined)?.document;
+        return fromView ?? (typeof document === 'undefined' ? null : document);
+    }
+
+    /** Resolve the current style revision from the embed URL, if any. */
+    function resolveStyleRev(): string | null {
+        const view = opts.view ?? (typeof window === 'undefined' ? null : window);
+        return readStyleRevFromUrl((view as unknown as { location?: { hash?: string; search?: string } } | null | undefined)?.location ?? null);
+    }
+
+    /**
+     * Merge a fresh Style Surface push into the known map, paint it (unless
+     * opted out), refresh `context.styleTokens` in place, cache it for the
+     * next pre-paint bootstrap, and tell subscribers.
+     *
+     * MERGES rather than replaces: CONTEXT delivers the install's whole
+     * resolved map, while a later STYLE_TOKENS push may carry only the
+     * surface the merchant is actively editing — replacing wholesale on every
+     * live edit would repaint everything else back to its shipped default
+     * mid-session.
+     */
+    function adoptStyleTokens(vars: Record<string, string> | null | undefined, rev: string | null): void {
+        if (vars === null || vars === undefined || typeof vars !== 'object' || Array.isArray(vars)) {
+            return;
+        }
+        styleTokens = { ...styleTokens, ...vars };
+        if (context !== null) {
+            context = { ...context, styleTokens };
+        }
+        if (shouldApplyStyleTokens) {
+            applyStyleTokens(vars, resolveStyleDocument());
+        }
+        cacheStyleTokens(rev ?? resolveStyleRev(), styleTokens);
+        for (const listener of Array.from(styleTokensListeners)) {
+            try {
+                listener(styleTokens);
+            } catch {
+                /* One app's throwing listener must not starve the others. */
+            }
+        }
+        emit('styleTokens', styleTokens);
+    }
     let directApiEndpoint = DEFAULT_DIRECT_API_ENDPOINT;
     /**
      * Opaque envelope channel. Echoed on every outbound message once the host
@@ -425,6 +507,12 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
                  * standing rather than being read as "light".
                  */
                 setTheme(normaliseColorScheme(payload.theme));
+                // Same idea as THEME above: the fragment/bootstrap value (if
+                // any) already stands, and CONTEXT.styleTokens either confirms
+                // it or supplies the whole map for an app that had none —
+                // `adoptStyleTokens` merges either way. A host that declares
+                // nothing leaves whatever the bootstrap cached standing.
+                adoptStyleTokens(payload.styleTokens, resolveStyleRev());
                 context = {
                     origin: payload.origin,
                     token: currentToken,
@@ -437,6 +525,7 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
                     expiresAt: contextExpiry,
                     hostCapabilities,
                     theme,
+                    styleTokens,
                 };
                 // Re-announce the CURRENT capability state the moment the host
                 // declares itself ready. SET_CAPABILITIES is fire-and-forget,
@@ -597,6 +686,8 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
             handleToken(data.payload);
         } else if (data.type === MessageType.Theme) {
             setTheme(normaliseColorScheme((data.payload as { theme?: unknown } | null)?.theme));
+        } else if (data.type === MessageType.StyleTokens) {
+            handleStyleTokens(data.payload);
         }
 
         // Channel subscribers see everything that passed the gate, including
@@ -632,6 +723,28 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
             }
         }
         emit('theme', theme);
+    }
+
+    /**
+     * A STYLE_TOKENS push. Payload is untrusted after the gate, same discipline
+     * as HOST_NAVIGATE/ACTION: only `--`-prefixed keys with string values are
+     * kept, everything else is silently dropped rather than handed to
+     * `CSSStyleDeclaration.setProperty` (which throws on a malformed name).
+     */
+    function handleStyleTokens(payload: unknown): void {
+        const p = payload as { vars?: unknown; rev?: unknown } | null | undefined;
+        if (p === null || p === undefined || typeof p.vars !== 'object' || p.vars === null || Array.isArray(p.vars)) {
+            return;
+        }
+
+        const vars: Record<string, string> = {};
+        for (const [name, value] of Object.entries(p.vars as Record<string, unknown>)) {
+            if (name.startsWith('--') && typeof value === 'string') {
+                vars[name] = value;
+            }
+        }
+
+        adoptStyleTokens(vars, typeof p.rev === 'string' ? p.rev : null);
     }
 
     function handleHostNavigate(payload: unknown): void {
@@ -1115,6 +1228,15 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
                 themeListeners.delete(listener);
             };
         },
+        get styleTokens(): Record<string, string> {
+            return styleTokens;
+        },
+        onStyleTokens(listener: (vars: Record<string, string>) => void): () => void {
+            styleTokensListeners.add(listener);
+            return () => {
+                styleTokensListeners.delete(listener);
+            };
+        },
         get context(): AppContext | null {
             return context;
         },
@@ -1324,12 +1446,13 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
             }
             pendingTokens.clear();
             inbound.clear();
+            styleTokensListeners.clear();
             emit('destroy', null);
         },
     };
 }
 
-type BridgeEventKey = 'context' | 'ready' | 'destroy' | 'theme';
+type BridgeEventKey = 'context' | 'ready' | 'destroy' | 'theme' | 'styleTokens';
 
 /**
  * Open a third-party consent popup and wait for the app's OWN callback page.

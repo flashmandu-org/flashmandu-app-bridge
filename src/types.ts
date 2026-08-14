@@ -106,6 +106,15 @@ export const MessageType = {
      * very first frame. THEME carries only subsequent transitions.
      */
     Theme: 'FLASHMANDU_BRIDGE:THEME',
+    /**
+     * parent → iframe. Resolved CSS custom-property values for a Style
+     * Surface (design doc §3.3): the merchant is editing this app's visuals
+     * from the builder (live, non-destructive preview), or the admin embed is
+     * pushing a fresher resolution than what the pre-paint bootstrap cached.
+     * Applied as `root.style.setProperty(name, value)` per entry — a paint,
+     * no reload, no re-mint. See `style.ts`.
+     */
+    StyleTokens: 'FLASHMANDU_BRIDGE:STYLE_TOKENS',
 } as const;
 
 export type MessageTypeValue = (typeof MessageType)[keyof typeof MessageType];
@@ -191,6 +200,26 @@ export interface ThemePayload {
 }
 
 /**
+ * STYLE_TOKENS payload (parent → iframe).
+ *
+ * `vars` is a flat, already-resolved CSS-custom-property map — e.g.
+ * `{ "--tours-card-bg": "#ffffff" }` — applied verbatim with no interpretation
+ * by the app. `surface` names which manifest-declared Style Surface this
+ * update belongs to; it is informational (matches `preview_hint` gating in
+ * the builder) and does NOT scope which vars get applied, since var names are
+ * already globally unique per app (`style_var_prefix`). `rev` is the
+ * resolution's revision, used to `localStorage`-cache the applied map for the
+ * next pre-paint bootstrap — see {@link STYLE_REV_FRAGMENT_KEY} in `style.ts`.
+ */
+export interface StyleTokensPayload {
+    surface: string;
+    vars: Record<string, string>;
+    rev: string;
+    /** True when this push is a non-destructive builder preview, not a save. */
+    preview?: boolean;
+}
+
+/**
  * CONTEXT payload (parent → iframe).
  *
  * The host historically posted only `{ origin }`. Every other field is
@@ -219,6 +248,14 @@ export interface ContextPayload {
      * declared", which the SDK reads as "keep following the OS".
      */
     theme?: ColorScheme;
+    /**
+     * The resolved Style Surface token map at handshake time (design §3.3(iii):
+     * "CONTEXT.styleTokens lands one tick later" than the fragment-cached
+     * pre-paint value). Absent means "host predates Style Surfaces, or nothing
+     * is customised on this install" — the app's own shipped CSS defaults
+     * stand either way.
+     */
+    styleTokens?: Record<string, string>;
     /** Opaque envelope channel to echo on outbound messages. See BridgeMessage. */
     channel?: string;
     /**
@@ -666,6 +703,13 @@ export interface AppContext {
      * value — never null — so an app can read it without a fallback of its own.
      */
     theme: ColorScheme;
+    /**
+     * The currently known Style Surface token map — merged from
+     * `CONTEXT.styleTokens` and every `STYLE_TOKENS` push received since.
+     * Empty object on an uncustomised install, never undefined, so a reader
+     * never needs a fallback of its own.
+     */
+    styleTokens: Record<string, string>;
 }
 
 /** Public events the app can subscribe to via `on()`. */
@@ -673,7 +717,8 @@ export type BridgeEventName =
     | 'context'
     | 'ready'
     | 'destroy'
-    | 'theme';
+    | 'theme'
+    | 'styleTokens';
 
 /** Generic event listener. */
 export type BridgeListener = (payload: unknown) => void;

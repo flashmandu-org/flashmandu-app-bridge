@@ -100,6 +100,7 @@ export type {
     ToastPayload,
     ToastVariant,
     ThemePayload,
+    StyleTokensPayload,
     TokenPayload,
     TokenRefreshPayload,
 } from './types.js';
@@ -180,3 +181,21 @@ export {
     THEME_CLASS,
     THEME_FRAGMENT_KEY,
 } from './theme.js';
+
+/**
+ * Style Surfaces — merchant-editable app visuals, delivered as CSS custom
+ * properties (design doc §3.3/§3.4). `styleBootstrapScript()` carries the same
+ * hard placement requirement as `themeBootstrapScript()`: inline it in the
+ * served HTML, ahead of the app's own markup, for a zero-FOUC repaint from the
+ * `localStorage` cache. `styleSurfaceCss()` (the storefront's SSR path, where
+ * there is no `localStorage` to cache into) lives in
+ * `@flashmandu/app-bridge/server`, not here.
+ */
+export {
+    applyStyleTokens,
+    cacheStyleTokens,
+    readStyleRevFromUrl,
+    styleBootstrapScript,
+    STYLE_CACHE_STORAGE_KEY,
+    STYLE_REV_FRAGMENT_KEY,
+} from './style.js';

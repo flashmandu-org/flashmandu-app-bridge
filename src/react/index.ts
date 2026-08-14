@@ -9,6 +9,7 @@ export type { PageChromeAction, PageChromeInput } from './use-page-chrome.js';
 export { BridgeContext } from './bridge-context.js';
 export { BridgeBootstrap } from './bridge-bootstrap.js';
 export { useColorScheme, useIsDarkMode } from './use-theme.js';
+export { useStyleTokens } from './use-style-tokens.js';
 export { UrlSync } from './url-sync.js';
 export type { UrlSyncProps } from './url-sync.js';
 

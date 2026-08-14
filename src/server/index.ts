@@ -31,3 +31,5 @@ export {
     verifyEmbedTokenDetailed,
 } from './auth.js';
 export type { SessionInfo, VerifyTokenBad, VerifyTokenOk, VerifyTokenResult } from './auth.js';
+
+export { decodeStyleSurfaceClaim, styleSurfaceCss } from './style.js';
