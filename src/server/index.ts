@@ -22,9 +22,12 @@ export {
 export type { VerifyResult, VerifyWebhookInput, WebhookHeaders } from './webhooks.js';
 
 export {
+    AuthError,
     mintEmbedToken,
+    requireSession,
     resolveProfile,
+    resolveSession,
     verifyEmbedToken,
     verifyEmbedTokenDetailed,
 } from './auth.js';
-export type { VerifyTokenBad, VerifyTokenOk, VerifyTokenResult } from './auth.js';
+export type { SessionInfo, VerifyTokenBad, VerifyTokenOk, VerifyTokenResult } from './auth.js';

@@ -21,11 +21,18 @@ import type { AppConfig } from './config.js';
  * itself. For admin routes (model CRUD), a bare `?profileId=` query param is
  * accepted because the iframe embed is the auth gate.
  *
- * Resolution order (`resolveProfile`):
+ * Resolution order (`resolveSession` / `resolveProfile`):
  *   1. `Authorization: Bearer <token>` header, or `?session_token=<token>`
  *      query param (verified against `cfg.appSecret()`)
  *   2. `?profileId=<n>` query param (accepted in all environments since the
  *      admin iframe is already access-gated by the host)
+ *
+ * `resolveSession`/`requireSession` are the SYNCHRONOUS session surface most
+ * app route handlers actually want: the full verified token payload (not
+ * just the profile id), a typed `AuthError` for a one-line 401 rewrite, and
+ * no `await` at every call site. `resolveProfile` (async, bare profile-id
+ * string) is kept for existing callers and is now expressed in terms of
+ * `resolveSession` — there is exactly one resolution implementation.
  */
 
 export type VerifyTokenOk = { ok: true; payload: Record<string, string> };
@@ -197,19 +204,42 @@ export function verifyEmbedToken(token: string, secret: string): { profileId: st
     return { profileId: String(pid) };
 }
 
+/** A resolved caller identity: the numeric profile id plus the full verified token payload. */
+export interface SessionInfo {
+    profileId: number;
+    /** The raw token payload (for additional context beyond profile_id, e.g. role). */
+    payload: Record<string, string>;
+}
+
 /**
- * Resolve the caller's profile id from an admin API request.
+ * Structured error with an HTTP status code, for API route handlers to catch
+ * and turn into a response (`requireSession` throws this).
+ */
+export class AuthError extends Error {
+    constructor(
+        message: string,
+        public status: number = 401,
+    ) {
+        super(message);
+        this.name = 'AuthError';
+    }
+}
+
+/**
+ * Resolve the caller's session from an admin API request. SYNCHRONOUS.
  *
- * Order: `Authorization: Bearer` header or `?session_token=` query param
+ * Order: `?session_token=` query param or `Authorization: Bearer` header
  * (verified against `cfg.appSecret()`, called lazily here — not before),
  * then bare `?profileId=` — accepted because the iframe embed is the auth
- * gate. Returns `null` when neither resolves.
+ * gate. Returns `null` when neither resolves. Never throws merely because
+ * `cfg.appSecret()` is unprovisioned.
  */
-export async function resolveProfile(req: Request, cfg: AppConfig): Promise<string | null> {
+export function resolveSession(req: Request, cfg: AppConfig): SessionInfo | null {
     const url = new URL(req.url);
 
     const auth = req.headers.get('authorization') ?? '';
     const bearer = auth.toLowerCase().startsWith('bearer ') ? auth.slice(7).trim() : null;
+    // Query param overrides header for flexibility.
     const sessionToken = url.searchParams.get('session_token') ?? bearer;
 
     if (sessionToken) {
@@ -220,9 +250,12 @@ export async function resolveProfile(req: Request, cfg: AppConfig): Promise<stri
             secret = '';
         }
         if (secret) {
-            const verified = verifyEmbedToken(sessionToken, secret);
-            if (verified) {
-                return verified.profileId;
+            const result = verifyEmbedTokenDetailed(sessionToken, secret);
+            if (result.ok) {
+                const pid = Number.parseInt(result.payload.profile_id ?? '', 10);
+                if (Number.isFinite(pid) && pid > 0) {
+                    return { profileId: pid, payload: result.payload };
+                }
             }
         }
     }
@@ -233,9 +266,37 @@ export async function resolveProfile(req: Request, cfg: AppConfig): Promise<stri
     if (raw) {
         const pid = Number.parseInt(raw, 10);
         if (Number.isFinite(pid) && pid > 0) {
-            return String(pid);
+            return { profileId: pid, payload: { profile_id: String(pid) } };
         }
     }
 
     return null;
+}
+
+/**
+ * Resolve the caller's session, throwing a structured {@link AuthError}
+ * (suitable for an API route's catch block) when unauthenticated.
+ */
+export function requireSession(req: Request, cfg: AppConfig): SessionInfo {
+    const session = resolveSession(req, cfg);
+    if (!session) {
+        throw new AuthError(
+            'Authentication required. Provide a valid session token via ' +
+                'Authorization: Bearer or ?session_token=.',
+            401,
+        );
+    }
+    return session;
+}
+
+/**
+ * Resolve the caller's profile id from an admin API request.
+ *
+ * Async, bare-string surface kept for existing callers; expressed in terms
+ * of {@link resolveSession} so there is a single resolution implementation.
+ * Returns `null` when neither a valid token nor `?profileId=` resolves.
+ */
+export async function resolveProfile(req: Request, cfg: AppConfig): Promise<string | null> {
+    const session = resolveSession(req, cfg);
+    return session ? String(session.profileId) : null;
 }
