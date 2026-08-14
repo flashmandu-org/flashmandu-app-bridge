@@ -35,7 +35,48 @@ describe('createWebhookRoute', () => {
         const json = await res.json();
         expect(json).toMatchObject({ ok: true, handled: 'purged' });
         expect(onUninstalled).toHaveBeenCalledTimes(1);
-        expect(onUninstalled).toHaveBeenCalledWith('5');
+        expect(onUninstalled).toHaveBeenCalledWith('5', {
+            event: 'app.uninstalled',
+            deliveryId: 'd1',
+            payload: { profile_id: 5 },
+        });
+    });
+
+    it('passes the delivery context (event, deliveryId, payload) as the second argument', async () => {
+        const onUninstalled = vi.fn(async () => ({ models: 3 }));
+        const { POST } = createWebhookRoute({ cfg, onUninstalled });
+
+        const body = JSON.stringify({ event: 'profile.data.erased', payload: { profile_id: 9 } });
+        const req = signedRequest(body, 'w', 'ctx-1', 'profile.data.erased');
+
+        await POST(req);
+
+        expect(onUninstalled).toHaveBeenCalledWith('9', {
+            event: 'profile.data.erased',
+            deliveryId: 'ctx-1',
+            payload: { profile_id: 9 },
+        });
+    });
+
+    it('still calls a legacy single-argument (profileId) => ... callback correctly', async () => {
+        // Written exactly as pre-context-argument code declared it — TS still
+        // accepts this against the widened `onUninstalled` type, and at
+        // runtime JS simply ignores the extra `context` argument this
+        // function never named a parameter for.
+        const purged: Record<string, number>[] = [];
+        async function legacyOnUninstalled(profileId: string): Promise<Record<string, number>> {
+            purged.push({ profile: Number(profileId) });
+            return { models: 1 };
+        }
+        const { POST } = createWebhookRoute({ cfg, onUninstalled: legacyOnUninstalled });
+
+        const body = JSON.stringify({ event: 'app.uninstalled', payload: { profile_id: 7 } });
+        const res = await POST(signedRequest(body, 'w', 'legacy-1'));
+
+        expect(res.status).toBe(200);
+        const json = await res.json();
+        expect(json).toMatchObject({ ok: true, handled: 'purged' });
+        expect(purged).toEqual([{ profile: 7 }]);
     });
 
     it('does not call the callback twice for a repeated X-App-Delivery', async () => {

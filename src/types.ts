@@ -262,16 +262,34 @@ export interface PageCrumb {
     path?: string;
 }
 
-/** Visual weight of a command-bar action. Mirrors the host's button variants. */
-export type PageActionVariant = 'primary' | 'ghost' | 'danger';
+/**
+ * Visual weight of a command-bar action. Mirrors the host's button variants,
+ * and is kept byte-identical to `@flashmandu/app-bridge-ui`'s `PageActionVariant`
+ * — that package's `configurePageChrome(usePageChrome)` wiring only
+ * type-checks if the two unions never diverge.
+ *
+ * `'default'` is a deprecated alias for the neutral (non-primary,
+ * non-danger) style. It exists only because shipped apps
+ * (tours/orbit/interactive-map) already pass it; new code should omit
+ * `variant` or pass `'ghost'` explicitly. Both normalise to the same
+ * rendering.
+ */
+export type PageActionVariant = 'primary' | 'ghost' | 'danger' | 'default';
 
-/** One command-bar action button owned by the app. */
+/**
+ * One command-bar action button owned by the app.
+ *
+ * `variant` is OPTIONAL: an action with no explicit variant renders as the
+ * neutral style, which is what most page-level actions want — only the
+ * primary save/publish action and a destructive action need to stand out.
+ */
 export interface PageAction {
     /** Stable id echoed back in ACTION. `[A-Za-z0-9_-]{1,32}`. */
     id: string;
     /** Button label, max 48 chars. */
     label: string;
-    variant: PageActionVariant;
+    /** @default 'ghost' (neutral). See {@link PageActionVariant}. */
+    variant?: PageActionVariant;
     /** Icon name from the host allow-list. Unknown names render no icon. */
     icon?: string;
     disabled?: boolean;

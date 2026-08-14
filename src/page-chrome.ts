@@ -12,7 +12,7 @@
  * here converts that into a stack trace pointing at the offending call.
  */
 
-import type { PageAction, PageCrumb, SetPagePayload } from './types.js';
+import type { PageAction, PageActionVariant, PageCrumb, SetPagePayload } from './types.js';
 
 /** Host caps, mirrored from the host's enforced SET_PAGE validation. */
 export const PAGE_CHROME_LIMITS = {
@@ -26,7 +26,23 @@ export const PAGE_CHROME_LIMITS = {
 } as const;
 
 const ACTION_ID_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
-const ACTION_VARIANTS = ['primary', 'ghost', 'danger'] as const;
+
+/** The variant spellings accepted on input — canonical set plus the deprecated alias. */
+const ACCEPTED_ACTION_VARIANTS = ['primary', 'ghost', 'danger', 'default'] as const;
+
+/** The variant spellings the host actually distinguishes on the wire. */
+const CANONICAL_ACTION_VARIANTS = ['primary', 'ghost', 'danger'] as const;
+type CanonicalActionVariant = (typeof CANONICAL_ACTION_VARIANTS)[number];
+
+/**
+ * Resolve an author-supplied (possibly absent, possibly the deprecated
+ * `'default'` alias) variant down to the three the host renders distinctly.
+ * Missing and `'default'` both mean "no explicit weight" — the neutral style.
+ */
+function normaliseVariant(variant: PageActionVariant | undefined): CanonicalActionVariant {
+    if (variant === undefined || variant === 'default') return 'ghost';
+    return variant;
+}
 
 /**
  * The host's `APP_PATH_PATTERN` for a crumb path.
@@ -108,7 +124,10 @@ export function isAppRelativePath(path: string): boolean {
  * Normalisation is deliberately narrow — dropping `undefined` optionals so two
  * structurally identical payloads compare equal in {@link pageChromeEquals}.
  * It never trims, truncates, or otherwise "fixes" over-cap input: silently
- * shortening a label is how a bug ships.
+ * shortening a label is how a bug ships. The one exception is `variant`: a
+ * missing variant or the deprecated `'default'` alias is filled in as
+ * `'ghost'`, because that substitution is a documented default, not a silent
+ * repair of invalid input.
  */
 export function normalisePageChrome(input: SetPagePayload): SetPagePayload {
     // `dirty` is REQUIRED and must be a real boolean. The host drops the whole
@@ -182,8 +201,9 @@ export function normalisePageChrome(input: SetPagePayload): SetPagePayload {
             `SET_PAGE: actions[${index}].label max ${PAGE_CHROME_LIMITS.labelChars} chars.`,
         );
         assert(
-            (ACTION_VARIANTS as readonly string[]).includes(action.variant),
-            `SET_PAGE: actions[${index}].variant must be one of ${ACTION_VARIANTS.join(', ')}.`,
+            action.variant === undefined ||
+                (ACCEPTED_ACTION_VARIANTS as readonly string[]).includes(action.variant),
+            `SET_PAGE: actions[${index}].variant must be one of ${ACCEPTED_ACTION_VARIANTS.join(', ')} when present.`,
         );
 
         // The host drops the WHOLE payload for a non-boolean flag, so a stray
@@ -198,7 +218,7 @@ export function normalisePageChrome(input: SetPagePayload): SetPagePayload {
             `SET_PAGE: actions[${index}].loading must be a boolean when present.`,
         );
 
-        const out: PageAction = { id: action.id, label: action.label, variant: action.variant };
+        const out: PageAction = { id: action.id, label: action.label, variant: normaliseVariant(action.variant) };
         if (action.icon !== undefined) {
             // Deliberately NOT an assertion: the host renders an unknown icon
             // as no icon rather than rejecting, and this SDK must not be

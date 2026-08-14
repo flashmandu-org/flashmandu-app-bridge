@@ -11,6 +11,8 @@ export type { AppConfig } from './config.js';
 export { createFlashmanduClient } from './flashmandu.js';
 export type { FlashmanduClient, FlashmanduClientOptions } from './flashmandu.js';
 
+export { revalidateProfile } from './revalidate.js';
+
 export {
     DEFAULT_MAX_SKEW_SECONDS,
     readWebhookHeaders,

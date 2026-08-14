@@ -12,6 +12,7 @@
  */
 
 import type { AppConfig } from '../server/config.js';
+import { revalidateProfile } from '../server/revalidate.js';
 import { verifyWebhook } from '../server/webhooks.js';
 
 /* ------------------------------------------------------------------------ *
@@ -277,14 +278,44 @@ function profileIdFromPayload(payload: unknown): string | null {
     return null;
 }
 
+/**
+ * The delivery context `onUninstalled` receives as its second argument —
+ * everything `onEvent` already gets (`event`, `payload`, `deliveryId`) minus
+ * the profile id, which stays the first positional argument for backward
+ * compatibility with callers written against the single-argument shape.
+ *
+ * Without this, an app that keeps its own delivery ledger (claiming rows via
+ * `seenDelivery`, enriching them with `event`/`payload` inside `onEvent`) has
+ * no way to complete or release-on-failure the ledger row for a purge
+ * delivery specifically — `app.uninstalled`/`profile.data.erased` routed to
+ * `onUninstalled` and told it nothing but the resolved profile id.
+ */
+export interface OnUninstalledContext {
+    /** The webhook event name, e.g. `app.uninstalled` or `profile.data.erased`. */
+    event: string;
+    /** `X-App-Delivery`, or `''` if the platform sent none. */
+    deliveryId: string;
+    /** The raw, unvalidated payload body — the same value `onEvent` receives. */
+    payload: unknown;
+}
+
 export interface CreateWebhookRouteOptions {
     cfg: AppConfig;
     /**
      * Called for `app.uninstalled` / `profile.data.erased` with the target
-     * profile id. Returns the purge counts to log, e.g.
+     * profile id, plus the delivery {@link OnUninstalledContext} as a second
+     * argument. Returns the purge counts to log, e.g.
      * `{ models: 3, files: 12 }`.
+     *
+     * The second argument is additive: a callback declared as
+     * `(profileId: string) => Promise<...>` still type-checks and still
+     * runs unchanged — JS simply ignores an extra argument a function
+     * doesn't declare a parameter for.
      */
-    onUninstalled?: (profileId: string) => Promise<Record<string, number>>;
+    onUninstalled?: (
+        profileId: string,
+        context: OnUninstalledContext,
+    ) => Promise<Record<string, number>>;
     /** Called for every OTHER verified, non-duplicate event. */
     onEvent?: (event: string, payload: unknown, deliveryId: string) => Promise<void>;
     /**
@@ -372,7 +403,7 @@ export function createWebhookRoute(opts: CreateWebhookRouteOptions): WebhookRout
                         console.warn(`[flashmandu] ${event} carried no profile_id; nothing purged`);
                         handled = 'purge_skipped_no_profile';
                     } else {
-                        const purged = await opts.onUninstalled(profileId);
+                        const purged = await opts.onUninstalled(profileId, { event, deliveryId, payload });
                         const counts = Object.entries(purged)
                             .map(([key, value]) => `${key}=${value}`)
                             .join(' ');
@@ -399,13 +430,20 @@ export function createWebhookRoute(opts: CreateWebhookRouteOptions): WebhookRout
  * ------------------------------------------------------------------------ */
 
 /**
- * `createRevalidateHandler` — platform cache revalidation.
+ * `createRevalidateHandler` — platform cache revalidation, as a Next.js
+ * route factory.
  *
  * The platform caches embed-block data derived from this app's rows — the
  * block picker markup in the page builder and the dynamic-options payloads
  * behind block dropdowns. After any mutation to the data your blocks render,
  * tell the platform to drop those caches or the builder keeps showing stale
  * choices for the cache TTL.
+ *
+ * A thin HTTP wrapper around {@link revalidateProfile} (`../server/revalidate.js`)
+ * — mount this at an app route the platform POSTs to. Calling the purge
+ * in-process from a server action (no `Request` in hand) is exactly what
+ * {@link revalidateProfile} is for; import it directly from
+ * `@flashmandu/app-bridge/server` instead of synthesizing a `Request` here.
  *
  * Fire-and-forget by design: a failed purge must never fail the merchant's
  * own save — the platform TTLs are the safety net. The returned handler
@@ -421,29 +459,7 @@ export function createRevalidateHandler(cfg: AppConfig): (req: Request) => Promi
             profileId = undefined;
         }
 
-        try {
-            const apiToken = cfg.apiToken;
-            const devBoxBaseUrl = cfg.devBoxBaseUrl;
-
-            if (devBoxBaseUrl !== '') {
-                await fetch(`${devBoxBaseUrl}/api/apps/embed/revalidate`, {
-                    method: 'POST',
-                    headers: {
-                        Authorization: `Bearer ${apiToken}`,
-                        'Content-Type': 'application/json',
-                    },
-                    // One platform-hosted pod serves every installing profile
-                    // with a shared credential, so name the profile that was
-                    // just mutated — the platform purges that profile's
-                    // caches (verified against its install rows).
-                    body: JSON.stringify(profileId ? { profile_id: profileId } : {}),
-                    cache: 'no-store',
-                    signal: AbortSignal.timeout(5000),
-                });
-            }
-        } catch {
-            // Intentionally swallowed — see docblock.
-        }
+        await revalidateProfile(cfg, profileId);
 
         return Response.json({ ok: true });
     };
