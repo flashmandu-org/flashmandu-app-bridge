@@ -18,8 +18,16 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
  * parameterize. Task B2 asks for a single options object instead
  * (`{ rawBody, headers, secret, now? }`), so this port wraps the ported
  * internals in that shape and additionally accepts a plain
- * `Record<string, string>` for `headers` (not just a `Headers` instance) —
- * everything downstream of header-normalization is untouched.
+ * `Record<string, string>` for `headers` (not just a `Headers` instance).
+ *
+ * A plain `Record<string, string>` is read VERBATIM and case-insensitively —
+ * it is never routed through `new Headers()`. That constructor silently
+ * trims whitespace and strips embedded newlines, and throws on non-Latin-1
+ * bytes, which would let a hostile or merely mangled header value produce a
+ * different verdict (or an uncaught exception) than the source file's
+ * already-normalized-object call site ever could. See
+ * {@see readRawHeaderRecord}. A real `Headers` instance is still read via its
+ * own (already case-insensitive) `.get()` API, matching the source exactly.
  *
  * The signature is an HMAC-SHA256 over `"{timestamp}.{rawBody}"` keyed by the
  * install's `webhook_secret`:
@@ -79,8 +87,50 @@ export function readWebhookHeaders(h: Headers): WebhookHeaders {
     };
 }
 
+/**
+ * Normalize a plain `Record<string, string>` header bag WITHOUT routing it
+ * through `new Headers()`.
+ *
+ * Node's `Headers` constructor silently trims leading/trailing whitespace,
+ * strips embedded newlines, and throws on non-Latin-1 bytes — all of which
+ * would corrupt (or crash on) a raw header value the caller is handing us
+ * verbatim, e.g. one it already parsed off the wire itself. A plain-object
+ * caller gets a byte-verbatim, case-insensitive lookup instead; the same
+ * "empty ⇒ absent" rule as {@see readWebhookHeaders} still applies.
+ */
+function readRawHeaderRecord(rec: Record<string, string>): WebhookHeaders {
+    const lower = new Map<string, string>();
+    for (const [key, value] of Object.entries(rec)) {
+        if (typeof value === 'string') {
+            lower.set(key.toLowerCase(), value);
+        }
+    }
+
+    const read = (name: string): string | null => {
+        const value = lower.get(name);
+        return value === undefined || value === '' ? null : value;
+    };
+
+    return {
+        signature: read('x-app-signature'),
+        timestamp: read('x-app-timestamp'),
+        delivery: read('x-app-delivery'),
+        event: read('x-app-event'),
+    };
+}
+
+/**
+ * Normalize either header shape without ever forcing a plain object through
+ * `new Headers()`. A real `Headers` instance is read via its own API (already
+ * case-insensitive); a plain record is read verbatim and case-insensitively
+ * by {@see readRawHeaderRecord}. This function never throws — hostile input
+ * (non-Latin-1 bytes, embedded control characters) simply flows through as
+ * the literal string it is, to be rejected by the ordinary validation checks
+ * in {@see verifyWebhook} rather than by a `TypeError` from the DOM `Headers`
+ * constructor.
+ */
 function normalizeHeaders(input: Headers | Record<string, string>): WebhookHeaders {
-    return readWebhookHeaders(input instanceof Headers ? input : new Headers(input));
+    return input instanceof Headers ? readWebhookHeaders(input) : readRawHeaderRecord(input);
 }
 
 /**
