@@ -1,6 +1,6 @@
 {
   "name": "@flashmandu/app-bridge",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "description": "In-iframe App Bridge SDK for Flashmandu embedded apps. Drives the embedded app from inside the platform's iframe via postMessage.",
   "license": "proprietary",
   "author": "Flashmandu <engineering@flashmandu.com>",

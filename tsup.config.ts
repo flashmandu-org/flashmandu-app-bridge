@@ -49,7 +49,13 @@ export default defineConfig([
         ],
         format: ['esm', 'cjs'],
         dts: true,
-        clean: true,
+        // NOT `clean: true`. tsup runs the two passes concurrently, so a
+        // `clean` here races the other pass and intermittently deletes the
+        // freshly-written `dist/react/*.d.ts` / `dist/next/*.d.ts` — which
+        // `verify:exports` then (correctly) fails the release on. `npm run
+        // clean` is the single writer of that deletion; `prepublishOnly`
+        // already chains it ahead of the build.
+        clean: false,
     },
     {
         // Client-only entries. These genuinely need `"use client"` — React
