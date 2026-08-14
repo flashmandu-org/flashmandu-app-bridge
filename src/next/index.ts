@@ -12,9 +12,12 @@
  *
  * `next` is an OPTIONAL peer dependency — nothing in the package root or in
  * `/react` imports it, so non-Next consumers never pull Next into their graph.
+ *
+ * This entry is built with a `"use client"` banner (see tsup.config.ts), so it
+ * only exports the genuine Client Component, `UrlSync`. The OAuth/webhook/
+ * revalidate route factories are server-only and live at the sibling,
+ * non-banner subpath `@flashmandu/app-bridge/next/routes` — import them from
+ * there, not from here.
  */
 
 export { UrlSync } from './url-sync.js';
-
-export { createOAuthRoutes, createRevalidateHandler, createWebhookRoute } from './routes.js';
-export type { CreateWebhookRouteOptions, OAuthRoutes, WebhookRoute } from './routes.js';

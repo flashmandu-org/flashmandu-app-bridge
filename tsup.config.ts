@@ -18,21 +18,43 @@ import { defineConfig } from 'tsup';
  * The core entry deliberately does NOT get the banner: it is framework-free and
  * must stay usable from a Server Component, a Node script, or no framework at
  * all. `verify-framework-free.mjs` enforces the other half of that contract.
+ *
+ * That non-banner constraint is why `src/next/routes.ts` (the OAuth/webhook/
+ * revalidate route factories) is built in the FIRST pass even though it lives
+ * under `src/next/`. Those factories are server-only Fetch `Request` ->
+ * `Response` handlers with no React/Next import — the banner pass would wrap
+ * them in `"use client"` and merge them into the same chunk as `UrlSync`,
+ * mislabeling server code as a Client Component and pulling `node:crypto`/
+ * `node:fs` into any bundle that touches it. They ship from the DIST subpath
+ * `next/routes.{js,cjs,d.ts}` (source and package `exports` subpath
+ * `./next/routes` — see package.json) so consumers get server code from a
+ * module that was never client-tainted. `src/next/index.ts` keeps only the
+ * genuine client export (`UrlSync`) and stays in the banner pass below.
  */
 export default defineConfig([
     {
-        // Core + the three optional framework-free entries. They live in the
-        // same pass so tsup emits ONE shared chunk for the code they have in
+        // Core + the optional framework-free entries. They live in the same
+        // pass so tsup emits ONE shared chunk for the code they have in
         // common (types, page-chrome) instead of duplicating it into several
-        // bundles. An app that never imports `/modal`, `/testing`, or
-        // `/server` never loads them. `/server` is Node-only (uses
-        // node:fs/node:crypto) but stays framework-free — no React/Next.
-        entry: ['src/index.ts', 'src/modal.ts', 'src/testing/index.ts', 'src/server/index.ts'],
+        // bundles. An app that never imports `/modal`, `/testing`, `/server`,
+        // or `/next/routes` never loads them. `/server` and `/next/routes`
+        // are Node-only (use node:fs/node:crypto) but stay framework-free —
+        // no React/Next import, so no banner and no client taint.
+        entry: [
+            'src/index.ts',
+            'src/modal.ts',
+            'src/testing/index.ts',
+            'src/server/index.ts',
+            'src/next/routes.ts',
+        ],
         format: ['esm', 'cjs'],
         dts: true,
         clean: true,
     },
     {
+        // Client-only entries. These genuinely need `"use client"` — React
+        // hooks (`/react`) and the Next `UrlSync` wrapper (`/next`) — so they
+        // get the banner. Nothing server-only belongs in this pass.
         entry: ['src/react/index.ts', 'src/next/index.ts'],
         format: ['esm', 'cjs'],
         dts: true,

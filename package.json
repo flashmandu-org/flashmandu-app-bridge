@@ -1,6 +1,6 @@
 {
   "name": "@flashmandu/app-bridge",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "In-iframe App Bridge SDK for Flashmandu embedded apps. Drives the embedded app from inside the platform's iframe via postMessage.",
   "license": "proprietary",
   "author": "Flashmandu <engineering@flashmandu.com>",
@@ -57,6 +57,11 @@
       "types": "./dist/next/index.d.ts",
       "import": "./dist/next/index.js",
       "require": "./dist/next/index.cjs"
+    },
+    "./next/routes": {
+      "types": "./dist/next/routes.d.ts",
+      "import": "./dist/next/routes.js",
+      "require": "./dist/next/routes.cjs"
     },
     "./package.json": "./package.json"
   },
