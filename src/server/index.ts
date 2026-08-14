@@ -33,3 +33,20 @@ export {
 export type { SessionInfo, VerifyTokenBad, VerifyTokenOk, VerifyTokenResult } from './auth.js';
 
 export { decodeStyleSurfaceClaim, styleSurfaceCss } from './style.js';
+
+export {
+    SECTION_SCHEMA_VERSION,
+    canonicalQuery,
+    readSectionContext,
+    sectionResponseBody,
+    signSectionRequest,
+    verifySectionRequest,
+} from './section.js';
+export type {
+    ComposableNode,
+    SectionCacheHints,
+    SectionContext,
+    SectionResponseBody,
+    SectionResult,
+    VerifySectionRequestInput,
+} from './section.js';

@@ -13,6 +13,13 @@
 
 import type { AppConfig } from '../server/config.js';
 import { revalidateProfile } from '../server/revalidate.js';
+import {
+    readSectionContext,
+    sectionResponseBody,
+    verifySectionRequest,
+    type SectionContext,
+    type SectionResult,
+} from '../server/section.js';
 import { verifyWebhook } from '../server/webhooks.js';
 
 /* ------------------------------------------------------------------------ *
@@ -462,5 +469,100 @@ export function createRevalidateHandler(cfg: AppConfig): (req: Request) => Promi
         await revalidateProfile(cfg, profileId);
 
         return Response.json({ ok: true });
+    };
+}
+
+/* ------------------------------------------------------------------------ *
+ * Storefront section proxy (Tier 2) — the app-served composable section.
+ * ------------------------------------------------------------------------ */
+
+/**
+ * `createSectionRoute` — serve a storefront section as composable JSON.
+ *
+ * This is the tier that gives a remote app a REAL storefront surface:
+ * server-rendered by the platform, SEO-visible, styled by the merchant's own
+ * design tokens, with no iframe and no CORS. You return data; the platform
+ * renders it with its own renderer. Nothing you return can execute — that is
+ * what buys you the surface.
+ *
+ * You write ONLY the handler:
+ *
+ * ```ts
+ * // app/sections/events/route.ts
+ * import { createSectionRoute } from '@flashmandu/app-bridge/next/routes';
+ * import { loadConfig } from '@flashmandu/app-bridge/server';
+ *
+ * export const { GET } = createSectionRoute({
+ *     cfg: loadConfig(),
+ *     async handler({ profileId, settings }) {
+ *         const events = await db.events.findMany({ where: { profileId } });
+ *
+ *         return {
+ *             tree: events.map((e) => ({ type: 'heading', props: { text: e.title } })),
+ *             cache: { ttl: 300, staleTtl: 86_400 },
+ *         };
+ *     },
+ * });
+ * ```
+ *
+ * The factory verifies the signature, parses and hands you the authenticated
+ * `profileId` + `settings`, stamps `schema_version`, and shapes the response.
+ *
+ * FAILURE BEHAVIOUR, and why it is what it is:
+ *  - Bad/missing signature → **401** carrying the verifier's own reason string.
+ *    The same string the platform logs, so a developer comparing the two logs
+ *    is looking at one sentence, not two.
+ *  - Your handler throws → **500** with a generic message. Handler internals
+ *    are never echoed to the platform: the platform's storefront renders a
+ *    placeholder either way, and an error string that reaches it would end up
+ *    in a merchant-visible log.
+ *
+ * `Cache-Control: no-store` is deliberate. The PLATFORM owns caching here
+ * (TTL + stale-while-revalidate + a circuit breaker, all driven by the `cache`
+ * hints you return); an intermediary caching this response too would give the
+ * merchant two clocks and no way to reason about either.
+ */
+export function createSectionRoute(opts: {
+    cfg: AppConfig;
+    handler: (ctx: SectionContext) => Promise<SectionResult> | SectionResult;
+    /** Override the skew window (seconds). Defaults to the webhook default (300). */
+    maxSkewSeconds?: number;
+}): { GET: (req: Request) => Promise<Response> } {
+    const { cfg, handler, maxSkewSeconds } = opts;
+
+    return {
+        GET: async function GET(req: Request): Promise<Response> {
+            const verdict = verifySectionRequest({
+                url: req.url,
+                headers: req.headers,
+                secret: cfg.webhookSecret,
+                maxSkewSeconds,
+            });
+
+            if (!verdict.ok) {
+                return Response.json(
+                    { ok: false, error: verdict.reason ?? 'unauthorized' },
+                    { status: 401, headers: { 'Cache-Control': 'no-store' } },
+                );
+            }
+
+            const ctx = readSectionContext(req.url, req.headers);
+
+            let result: SectionResult;
+
+            try {
+                result = await handler(ctx);
+            } catch {
+                return Response.json(
+                    { ok: false, error: 'section handler failed' },
+                    { status: 500, headers: { 'Cache-Control': 'no-store' } },
+                );
+            }
+
+            return Response.json(sectionResponseBody(result), {
+                status: 200,
+                headers: { 'Cache-Control': 'no-store' },
+            });
+        },
     };
 }
