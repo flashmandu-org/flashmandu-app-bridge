@@ -10,3 +10,19 @@ export type { AppConfig } from './config.js';
 
 export { createFlashmanduClient } from './flashmandu.js';
 export type { FlashmanduClient, FlashmanduClientOptions } from './flashmandu.js';
+
+export {
+    DEFAULT_MAX_SKEW_SECONDS,
+    readWebhookHeaders,
+    signWebhook,
+    verifyWebhook,
+} from './webhooks.js';
+export type { VerifyResult, VerifyWebhookInput, WebhookHeaders } from './webhooks.js';
+
+export {
+    mintEmbedToken,
+    resolveProfile,
+    verifyEmbedToken,
+    verifyEmbedTokenDetailed,
+} from './auth.js';
+export type { VerifyTokenBad, VerifyTokenOk, VerifyTokenResult } from './auth.js';
