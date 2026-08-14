@@ -9,8 +9,8 @@
  * a merchant on a light admin with a dark OS got a dark app inside a light
  * page. The host is the only party that knows the answer, so it has to say it.
  *
- * THREE DELIVERY POINTS, IN DESCENDING ORDER OF EARLINESS
- * -------------------------------------------------------
+ * FOUR DELIVERY POINTS, IN DESCENDING ORDER OF EARLINESS
+ * --------------------------------------------------------
  *  1. The embed URL fragment (`#fm_theme=dark`) — readable SYNCHRONOUSLY, in
  *     an inline script, before the document paints. This is the only channel
  *     early enough to prevent a flash of the wrong theme; the other two are
@@ -28,6 +28,17 @@
  *
  *  3. The `THEME` message — every later change, so a merchant toggling their
  *     admin theme is followed live, without reloading the iframe.
+ *
+ *  4. `light` — the LAST-RESORT fallback, used only when 1–3 all say nothing.
+ *     The host's own embed shell ALWAYS appends the fragment, so this branch
+ *     never fires inside a real embed; it only fires when the app is run
+ *     standalone (`npm run dev`, a preview deploy with no host). Because it
+ *     only ever affects developers, it defaults to `light` — the product is
+ *     light-first — rather than `prefers-color-scheme`, which used to hand a
+ *     dark-OS developer a dark app and get "fixed" by hardcoding dark styles
+ *     that then shipped to every merchant. A standalone app that DOES want to
+ *     track the OS opts back in explicitly with `data-fm-theme-follow-system`
+ *     on `<html>`; see {@link THEME_FOLLOW_SYSTEM_ATTRIBUTE}.
  *
  * WHAT GETS STAMPED ON THE DOCUMENT
  * ---------------------------------
@@ -48,6 +59,15 @@ export const THEME_ATTRIBUTE = 'data-fm-theme';
 
 /** Class name mirroring the host platform's own dark-mode switch. */
 export const THEME_CLASS = 'dark';
+
+/**
+ * Opt-in attribute for a STANDALONE app that wants the pre-fragment fallback
+ * to track `prefers-color-scheme` instead of defaulting to `light`. Set it on
+ * `<html>` (e.g. hardcoded in the shell, or via a dev-only build flag) —
+ * never as the app's normal posture, since every real embed already gets its
+ * theme from the fragment and never reaches this fallback at all.
+ */
+export const THEME_FOLLOW_SYSTEM_ATTRIBUTE = 'data-fm-theme-follow-system';
 
 /**
  * Coerce anything to a valid scheme, or null.
@@ -96,7 +116,7 @@ export function readThemeFromUrl(url: { hash?: string; search?: string } | null 
     }
 }
 
-/** What the viewer's OS says. The fallback for a standalone, non-embedded app. */
+/** What the viewer's OS says. Only consulted when {@link followsSystemTheme} allows it. */
 export function prefersDarkColorScheme(view: { matchMedia?: (q: string) => { matches: boolean } } | null | undefined): boolean {
     if (view === null || view === undefined || typeof view.matchMedia !== 'function') {
         return false;
@@ -110,10 +130,32 @@ export function prefersDarkColorScheme(view: { matchMedia?: (q: string) => { mat
 }
 
 /**
+ * Whether `<html>` carries the explicit standalone-dev opt-in. Everywhere
+ * else — every real embed, and a standalone app that never sets it — this is
+ * `false`, and the fallback is `light`.
+ */
+function followsSystemTheme(doc: { documentElement?: { hasAttribute?: (name: string) => boolean } } | null | undefined): boolean {
+    return doc?.documentElement?.hasAttribute?.(THEME_FOLLOW_SYSTEM_ATTRIBUTE) === true;
+}
+
+/**
+ * The OS fallback, gated on the opt-in attribute. `light` unless `<html>`
+ * carries `data-fm-theme-follow-system` AND the OS says dark.
+ */
+function osFallbackColorScheme(
+    view: { matchMedia?: (q: string) => { matches: boolean } } | null | undefined,
+    doc: { documentElement?: { hasAttribute?: (name: string) => boolean } } | null | undefined,
+): ColorScheme {
+    return followsSystemTheme(doc) && prefersDarkColorScheme(view) ? 'dark' : 'light';
+}
+
+/**
  * The scheme to paint with before the bridge handshake has happened.
  *
- * Embed URL first, OS second. Returns a concrete value so a caller never has
- * to invent one.
+ * Embed URL first, then the gated OS fallback. Returns a concrete value so a
+ * caller never has to invent one. The host always sends the fragment, so the
+ * fallback branch below only ever runs for a standalone (non-embedded) app —
+ * see the module doc comment for why it defaults to `light` there.
  */
 export function resolveInitialColorScheme(view: (Window & typeof globalThis) | null | undefined = typeof window === 'undefined' ? null : window): ColorScheme {
     if (view === null || view === undefined) {
@@ -125,7 +167,10 @@ export function resolveInitialColorScheme(view: (Window & typeof globalThis) | n
         return fromUrl;
     }
 
-    return prefersDarkColorScheme(view) ? 'dark' : 'light';
+    const doc = (view as unknown as { document?: Document }).document
+        ?? (typeof document === 'undefined' ? null : document);
+
+    return osFallbackColorScheme(view, doc);
 }
 
 /**
@@ -164,9 +209,9 @@ export function themeBootstrapScript(): string {
     return `(function(){try{`
         + `var m=/[#&?]${THEME_FRAGMENT_KEY}=([^&]+)/.exec(location.hash)`
         + `||/[?&]${THEME_FRAGMENT_KEY}=([^&]+)/.exec(location.search);`
-        + `var t=m&&(m[1]==='dark'||m[1]==='light')?m[1]`
-        + `:(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');`
         + `var r=document.documentElement;`
+        + `var t=m&&(m[1]==='dark'||m[1]==='light')?m[1]`
+        + `:(r.hasAttribute('${THEME_FOLLOW_SYSTEM_ATTRIBUTE}')&&window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');`
         + `r.setAttribute('${THEME_ATTRIBUTE}',t);`
         + `r.classList.toggle('${THEME_CLASS}',t==='dark');`
         + `r.style.colorScheme=t;`

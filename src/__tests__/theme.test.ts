@@ -38,9 +38,17 @@ interface FakeWindow extends EventTarget {
     sent: unknown[];
     location: { search: string; hash: string };
     matchMedia?: (query: string) => { matches: boolean };
+    document: { documentElement: { hasAttribute: (name: string) => boolean } };
 }
 
-function installFakeWindow(init: { hash?: string; prefersDark?: boolean } = {}): FakeWindow {
+/**
+ * `followSystem` stands in for `data-fm-theme-follow-system` on `<html>` —
+ * the explicit opt-in a STANDALONE app makes to keep following the OS. Every
+ * embedded app is exempt from needing it: the host always sends the
+ * fragment, so this attribute only ever matters in dev, where matching the
+ * light-first product beats matching the developer's OS (see theme.ts).
+ */
+function installFakeWindow(init: { hash?: string; prefersDark?: boolean; followSystem?: boolean } = {}): FakeWindow {
     const fake = new EventTarget() as FakeWindow;
     fake.parent = fake;
     fake.sent = [];
@@ -51,6 +59,11 @@ function installFakeWindow(init: { hash?: string; prefersDark?: boolean } = {}):
     fake.matchMedia = (query: string) => ({
         matches: query.includes('dark') && init.prefersDark === true,
     });
+    fake.document = {
+        documentElement: {
+            hasAttribute: (name: string) => name === 'data-fm-theme-follow-system' && init.followSystem === true,
+        },
+    };
     (globalThis as Record<string, unknown>).window = fake;
     return fake;
 }
@@ -196,10 +209,10 @@ describe('live change', () => {
 });
 
 describe('fallback', () => {
-    it('follows prefers-color-scheme when no host declares anything', () => {
+    it('defaults to light with no fragment, no context and a dark OS — the host always sends the fragment, so this only ever fires standalone', () => {
         host = installFakeWindow({ prefersDark: true });
 
-        expect(makeBridge().theme).toBe('dark');
+        expect(makeBridge().theme).toBe('light');
     });
 
     it('is light when nothing at all is known', () => {
@@ -208,8 +221,20 @@ describe('fallback', () => {
         expect(makeBridge().theme).toBe('light');
     });
 
-    it('keeps the OS value when a pre-0.3 host sends CONTEXT without a theme', async () => {
-        host = installFakeWindow({ prefersDark: true });
+    it('follows prefers-color-scheme only when data-fm-theme-follow-system opts in', () => {
+        host = installFakeWindow({ prefersDark: true, followSystem: true });
+
+        expect(makeBridge().theme).toBe('dark');
+    });
+
+    it('the fragment still wins over the OS even with the opt-in present', () => {
+        host = installFakeWindow({ hash: '#fm_theme=light', prefersDark: true, followSystem: true });
+
+        expect(makeBridge().theme).toBe('light');
+    });
+
+    it('keeps the resolved fallback value when a pre-0.3 host sends CONTEXT without a theme', async () => {
+        host = installFakeWindow({ prefersDark: true, followSystem: true });
         const bridge = makeBridge();
 
         dispatch({ type: MessageType.Context, payload: { origin: PARENT_ORIGIN } });
@@ -220,7 +245,7 @@ describe('fallback', () => {
     });
 
     it('survives a window with no matchMedia at all', () => {
-        host = installFakeWindow();
+        host = installFakeWindow({ followSystem: true });
         delete host.matchMedia;
 
         expect(makeBridge().theme).toBe('light');
@@ -316,7 +341,7 @@ describe('pre-paint bootstrap script', () => {
      * a white flash, so it is asserted as executable code, not as text: run it
      * against a stand-in global and check what it did to the document.
      */
-    function runBootstrap(init: { hash: string; search?: string; prefersDark?: boolean }): {
+    function runBootstrap(init: { hash: string; search?: string; prefersDark?: boolean; followSystem?: boolean }): {
         attribute: string | undefined;
         dark: boolean;
         colorScheme: string | undefined;
@@ -328,6 +353,7 @@ describe('pre-paint bootstrap script', () => {
             setAttribute: (k: string, v: string) => { attributes[k] = v; },
             classList: { toggle: (n: string, on: boolean) => (on ? classes.add(n) : classes.delete(n)) },
             style,
+            hasAttribute: (name: string) => name === 'data-fm-theme-follow-system' && init.followSystem === true,
         };
         const scope = {
             location: { hash: init.hash, search: init.search ?? '' },
@@ -365,16 +391,25 @@ describe('pre-paint bootstrap script', () => {
         expect(runBootstrap({ hash: '#fm_theme=light', prefersDark: true }).attribute).toBe('light');
     });
 
-    it('falls back to the OS for a standalone, non-embedded app', () => {
-        expect(runBootstrap({ hash: '', prefersDark: true }).attribute).toBe('dark');
+    it('defaults to light with no fragment — the host always sends one, so this is the standalone-dev path', () => {
+        expect(runBootstrap({ hash: '', prefersDark: true }).attribute).toBe('light');
         expect(runBootstrap({ hash: '', prefersDark: false }).attribute).toBe('light');
+    });
+
+    it('follows the OS only with data-fm-theme-follow-system on <html>', () => {
+        expect(runBootstrap({ hash: '', prefersDark: true, followSystem: true }).attribute).toBe('dark');
+        expect(runBootstrap({ hash: '', prefersDark: false, followSystem: true }).attribute).toBe('light');
     });
 
     it('reads the query string when the host signed it there instead', () => {
         expect(runBootstrap({ hash: '', search: '?fm_theme=dark' }).attribute).toBe('dark');
     });
 
-    it('ignores a junk value rather than stamping it', () => {
-        expect(runBootstrap({ hash: '#fm_theme=neon', prefersDark: true }).attribute).toBe('dark');
+    it('ignores a junk value rather than stamping it, falling back to light without the opt-in', () => {
+        expect(runBootstrap({ hash: '#fm_theme=neon', prefersDark: true }).attribute).toBe('light');
+    });
+
+    it('the fragment still wins over everything, including the opt-in', () => {
+        expect(runBootstrap({ hash: '#fm_theme=dark', prefersDark: false, followSystem: false }).attribute).toBe('dark');
     });
 });

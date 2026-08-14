@@ -155,8 +155,9 @@ export interface HostCapabilities {
      * on `CONTEXT.theme` and posts THEME on every subsequent change.
      *
      * Absent means "this host has no opinion", and an app should then fall
-     * back to `prefers-color-scheme` rather than pinning light — that silence
-     * is what every pre-0.3 host says.
+     * back to whatever `resolveInitialColorScheme` already resolved (the
+     * fragment, or — since bridge 0.4.0 — `light`, not `prefers-color-scheme`;
+     * see `theme.ts`). That silence is what every pre-0.3 host says.
      */
     theme?: boolean;
 }
@@ -170,6 +171,15 @@ export interface HostCapabilities {
  * merchant's OS, because the app cannot resolve it — an iframe's
  * `prefers-color-scheme` reports the DEVELOPER's OS in exactly the situation
  * this field exists to fix.
+ *
+ * Resolution order (see `theme.ts`): embed URL fragment → `CONTEXT.theme` /
+ * `THEME` → `light`. The host's embed shell ALWAYS appends the fragment, so
+ * the `light` fallback only ever runs for a standalone app with no host at
+ * all (`npm run dev`) — there, defaulting to the light-first product beats
+ * matching the developer's own OS, which is how a dark-mode laptop used to
+ * turn into hardcoded dark styles that then shipped to every merchant.
+ * A standalone app that wants OS-tracking back opts in explicitly with
+ * `data-fm-theme-follow-system` on `<html>`.
  */
 export type ColorScheme = 'light' | 'dark';
 
@@ -631,9 +641,11 @@ export interface AppContext {
     hostCapabilities: HostCapabilities;
     /**
      * The colour scheme the app should render in, resolved from (in order):
-     * the embed URL fragment, `CONTEXT.theme`, then `prefers-color-scheme`.
-     * Always a concrete value — never null — so an app can read it without a
-     * fallback of its own.
+     * the embed URL fragment, `CONTEXT.theme`/`THEME`, then `light`. The host
+     * always sends the fragment, so the `light` fallback only ever applies to
+     * a standalone app with no host (`prefers-color-scheme` is opt-in only,
+     * via `data-fm-theme-follow-system` — see `theme.ts`). Always a concrete
+     * value — never null — so an app can read it without a fallback of its own.
      */
     theme: ColorScheme;
 }
