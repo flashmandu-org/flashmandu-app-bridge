@@ -98,12 +98,73 @@ export function usePageChrome(input: PageChromeInput): void {
         };
         if (title !== undefined) payload.title = title;
 
-        const normalised = normalisePageChrome(payload);
-        if (pageChromeEquals(lastSent.current, normalised)) return;
-
-        lastSent.current = normalised;
-        getBridge().setPage(normalised);
+        lastSent.current = publishPageChrome(payload, lastSent.current, getBridge());
     });
+}
+
+/** The one bridge method {@link publishPageChrome} needs. */
+export interface PageChromeSink {
+    setPage: (page: SetPagePayload) => void;
+}
+
+const reportedChromeErrors = new Set<string>();
+
+/**
+ * Report a SET_PAGE payload the host would drop — LOUDLY, once per reason.
+ *
+ * The host's enforcement is a silent whole-payload drop, and a throw inside a
+ * React effect either unmounts the whole app (no error boundary) or is
+ * swallowed by one — both read as "the Save button vanished" with nothing
+ * pointing at the cause. So the reason goes to `console.error` in every
+ * environment (a merchant's devtools included), deduped so a per-render
+ * failure does not flood it. There is no bridge telemetry channel yet; when
+ * one lands this is the single place to wire it.
+ */
+export function reportPageChromeError(error: unknown, payload: SetPagePayload): void {
+    const reason = error instanceof Error ? error.message : String(error);
+    if (reportedChromeErrors.has(reason)) return;
+    reportedChromeErrors.add(reason);
+    if (typeof console !== 'undefined' && typeof console.error === 'function') {
+        console.error(
+            `[app-bridge] SET_PAGE was NOT sent — the host would drop this page chrome ` +
+            `(title, breadcrumbs and command-bar actions). Reason: ${reason}`,
+            payload,
+        );
+    }
+}
+
+/** Test helper — forget which reasons were already reported. */
+export function resetPageChromeErrors(): void {
+    reportedChromeErrors.clear();
+}
+
+/**
+ * Validate, diff and post one chrome payload; returns the payload that now
+ * counts as "last sent". The effect body of {@link usePageChrome}, pulled out
+ * so it is testable without a DOM.
+ *
+ * - Structurally equal to `lastSent` → nothing is posted. `pageChromeEquals`
+ *   compares `dirty` and every action's `disabled`/`loading`, so a form going
+ *   dirty (or a Save going busy) always re-posts.
+ * - Invalid → nothing is posted, the reason is reported via
+ *   {@link reportPageChromeError}, and `lastSent` is kept so the next valid
+ *   payload is still diffed against what the host actually shows.
+ */
+export function publishPageChrome(
+    payload: SetPagePayload,
+    lastSent: SetPagePayload | null,
+    sink: PageChromeSink,
+): SetPagePayload | null {
+    let normalised: SetPagePayload;
+    try {
+        normalised = normalisePageChrome(payload);
+    } catch (error) {
+        reportPageChromeError(error, payload);
+        return lastSent;
+    }
+    if (pageChromeEquals(lastSent, normalised)) return lastSent;
+    sink.setPage(normalised);
+    return normalised;
 }
 
 function stripHandler(action: PageChromeAction): PageAction {
