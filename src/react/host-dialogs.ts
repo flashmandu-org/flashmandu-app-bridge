@@ -93,7 +93,8 @@ export async function confirmDestructive(input: ConfirmInput): Promise<boolean> 
 
 /** What the merchant did with the media picker. */
 export type MediaPick =
-    | { status: 'picked'; url: string; label: string }
+    /** `id` is the host media id: hand it to your server to resolve through the host API. */
+    | { status: 'picked'; id: number; url: string; label: string }
     | { status: 'cancelled' }
     /** The app was never granted `read:media`. Degrade, never throw. */
     | { status: 'denied' }
@@ -139,14 +140,14 @@ export async function pickMedia(query?: string): Promise<MediaPick> {
         if (url === '') {
             return { status: 'unavailable', reason: 'no-url' };
         }
-        return { status: 'picked', url, label: String(first.label ?? '') };
+        return { status: 'picked', id: Number(first.id), url, label: String(first.label ?? '') };
     } catch (err) {
         return { status: 'unavailable', reason: err instanceof Error ? err.message : String(err) };
     }
 }
 
 /**
- * Open the media picker and return `{ url, label }`, or `null` after telling
+ * Open the media picker and return `{ id, url, label }`, or `null` after telling
  * the merchant why there is nothing (the ONE place apps settle a
  * {@link MediaPick}; Interactive Map and Tours each hand-wrote it before):
  *
@@ -161,7 +162,7 @@ export async function pickMedia(query?: string): Promise<MediaPick> {
 export async function chooseMedia(
     toast: (message: string, variant: 'error') => void,
     pick: () => Promise<MediaPick> = () => pickMedia(),
-): Promise<{ url: string; label: string } | null> {
+): Promise<{ id: number; url: string; label: string } | null> {
     let result: MediaPick;
     try {
         result = await pick();
@@ -169,7 +170,7 @@ export async function chooseMedia(
         result = { status: 'unavailable', reason: 'threw' };
     }
     if (result.status === 'picked') {
-        return { url: result.url, label: result.label };
+        return { id: result.id, url: result.url, label: result.label };
     }
     if (result.status === 'denied') {
         toast('This app has not been granted access to your media library.', 'error');
