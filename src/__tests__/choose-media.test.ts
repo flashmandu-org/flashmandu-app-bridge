@@ -15,8 +15,8 @@ const { chooseMedia } = await import('../react/host-dialogs.js');
 describe('chooseMedia', () => {
     it('returns the picked url and label without a toast', async () => {
         const toast = vi.fn();
-        const got = await chooseMedia(toast, async () => ({ status: 'picked', url: 'https://m/x.jpg', label: 'x.jpg' }));
-        expect(got).toEqual({ url: 'https://m/x.jpg', label: 'x.jpg' });
+        const got = await chooseMedia(toast, async () => ({ status: 'picked', id: 7, url: 'https://m/x.jpg', label: 'x.jpg' }));
+        expect(got).toEqual({ id: 7, url: 'https://m/x.jpg', label: 'x.jpg' });
         expect(toast).not.toHaveBeenCalled();
     });
 

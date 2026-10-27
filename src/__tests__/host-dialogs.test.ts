@@ -63,9 +63,16 @@ describe('pickMedia', () => {
         });
         await expect(pending).resolves.toEqual({
             status: 'picked',
+            id: 1,
             url: 'https://cdn.example/logo.png',
             label: 'Logo',
         });
+    });
+
+    it('carries the media id as a number, so an app server can resolve it through the host', async () => {
+        const pending = pickMedia();
+        host.answerPicker({ cancelled: false, selections: [{ id: '42', label: 'x', meta: { url: 'https://cdn.example/x.jpg' } }] });
+        await expect(pending).resolves.toMatchObject({ status: 'picked', id: 42 });
     });
 
     it('resolves cancelled', async () => {
