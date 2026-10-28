@@ -555,7 +555,7 @@ interface AppBridge {
 }
 ```
 
-### `@flashmandu/app-bridge/server` — Media Library writes (0.6.4)
+### `@flashmandu/app-bridge/server` — Media Library writes (0.6.4, `visibility` 0.6.5)
 
 Apps store their files in the merchant's Media Library (same profile, same
 quota, one library across every app), never in their own bucket. Needs the
@@ -567,8 +567,9 @@ import { createFlashmanduClient, loadConfig, MediaQuotaError, MediaScopeError } 
 const cfg = loadConfig();
 const client = createFlashmanduClient({ apiBase: cfg.devBoxBaseUrl, token: cfg.apiToken });
 
-const item = await client.media.upload(buffer, { filename: 'pano.jpg', collection: 'tours', alt: 'Lobby' });
-// → { id, url, filename, mimeType, size, collection }
+const item = await client.media.upload(buffer, { filename: 'pano.jpg', collection: 'tours', alt: 'Lobby', visibility: 'public' });
+// → { id, url, filename, mimeType, size, collection }  (url is null for a private item;
+//   visibility omitted → the host default, private)
 await client.media.delete(item.id); // only items this app added
 ```
 
@@ -580,7 +581,9 @@ await client.media.delete(item.id); // only items this app added
 | 507  | `MediaQuotaError`     | `quota_exceeded` | the profile's media storage is full             |
 
 All extend `FlashmanduMediaError` (`code`, `status`, `serverCode`); any other
-status is `code: 'http'`, a failed fetch is `code: 'network'`.
+status is `code: 'http'`, a failed fetch is `code: 'network'`. The host's
+`message` is for logs; show merchants your own copy keyed on `code` /
+`serverCode`.
 
 ### `@flashmandu/app-bridge/modal` — host modal + resource picker
 

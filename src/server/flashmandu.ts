@@ -7,7 +7,9 @@
  *                                mounted off /graphql on purpose, behind the
  *                                remote-app + throttle:60,1 middleware)
  *   POST /api/apps/media      — upload into the merchant's Media Library
- *                                (0.6.4, needs `write:media`); deletes ride
+ *                                (0.6.4, needs `write:media`; 0.6.5 adds
+ *                                `visibility`, host default private → url
+ *                                null); deletes ride
  *                                GraphQL `deleteMediaItem` (only items this
  *                                app added)
  *
@@ -38,7 +40,8 @@ export interface FlashmanduClientOptions {
 /** A Media Library item the host created for this app (201 body of POST /api/apps/media). */
 export interface UploadedMedia {
     id: number;
-    url: string;
+    /** Public URL; null for a `private` item (the host default). Send `visibility: 'public'` to get one. */
+    url: string | null;
     filename: string;
     mimeType: string;
     size: number;
@@ -54,6 +57,11 @@ export interface MediaUploadOptions {
     alt?: string;
     /** MIME type for a Buffer/Uint8Array body. Default: guessed from `filename`. */
     mimeType?: string;
+    /**
+     * `public` items get a URL a storefront can load; `private` items answer
+     * `url: null`. Omitted → the host default (`private`). 0.6.5.
+     */
+    visibility?: 'public' | 'private';
 }
 
 /** Bytes `media.upload()` accepts: a Blob/File as-is, or raw bytes (a Node Buffer is a Uint8Array). */
@@ -70,7 +78,8 @@ export interface FlashmanduMediaClient {
      * {@link MediaScopeError} (the merchant has not granted `write:media`), 413
      * {@link MediaTooLargeError}, 422 {@link MediaInvalidError}, 507
      * {@link MediaQuotaError}. The error's `message` is the host's own words
-     * (it names the limit), so it can be shown to the merchant as-is.
+     * (it may name the limit), meant for logs: show merchants your own copy
+     * keyed on `code` / `serverCode`, never the host text.
      */
     upload(file: MediaUploadBody, options: MediaUploadOptions): Promise<UploadedMedia>;
     /**
@@ -259,6 +268,9 @@ async function uploadMedia(
     if (options.alt !== undefined && options.alt !== '') {
         form.append('alt', options.alt);
     }
+    if (options.visibility !== undefined) {
+        form.append('visibility', options.visibility);
+    }
 
     let res: Response;
     try {
@@ -276,12 +288,12 @@ async function uploadMedia(
         throw mediaErrorFor(res.status, body);
     }
     const item = body as Partial<UploadedMedia> | null;
-    if (item === null || item.id === undefined || item.id === null || typeof item.url !== 'string') {
-        throw new FlashmanduMediaError('bad_response', 'The platform answered the upload without a media id and url.', {
+    if (item === null || item.id === undefined || item.id === null || !(typeof item.url === 'string' || item.url === null)) {
+        throw new FlashmanduMediaError('bad_response', 'The platform answered the upload without a media id.', {
             status: res.status,
         });
     }
-    return { ...(item as UploadedMedia), id: Number(item.id) };
+    return { ...(item as UploadedMedia), id: Number(item.id), url: item.url ?? null };
 }
 
 /**
