@@ -164,17 +164,20 @@ export class MediaQuotaError extends FlashmanduMediaError {
 }
 
 /**
- * A non-2xx answer from `me()` / `hooks()` / `graphql()` (0.6.6). Same
- * message as before (it is still an `Error`); `status` lets a caller tell a
- * rejected token (401) from an unreachable host without parsing the text.
+ * A non-2xx answer from `me()` / `hooks()` / `graphql()` (0.6.6): `status`
+ * and the host's `error` slug (`code`), safe to log. The response body is NOT
+ * kept (it can carry host internals), so the message no longer echoes it.
  */
 export class FlashmanduApiError extends Error {
     readonly status: number;
+    /** The host's `error` slug, when the body carried one. The body itself is never kept. */
+    readonly code: string | null;
 
-    constructor(status: number, message: string) {
+    constructor(status: number, code: string | null, message: string) {
         super(message);
         this.name = 'FlashmanduApiError';
         this.status = status;
+        this.code = code;
     }
 }
 
@@ -207,8 +210,11 @@ async function request<T>(opts: FlashmanduClientOptions, p: string, init: Reques
         },
     });
     if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new FlashmanduApiError(res.status, `Flashmandu API ${res.status} ${res.statusText}: ${text}`);
+        // Status + the host's `error` slug only: the body can carry host
+        // internals and must never reach a log or a merchant (0.6.6 review).
+        const body: unknown = await res.json().catch(() => null);
+        const code = readBodyField(body, 'error');
+        throw new FlashmanduApiError(res.status, code, `Flashmandu API ${res.status}${code !== null ? ` (${code})` : ''}`);
     }
     if (res.status === 204) {
         return undefined as T;

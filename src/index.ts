@@ -48,8 +48,9 @@ export {
     DIRECT_TOKEN_HEADER,
     DIRECT_TOKEN_REJECTED_HEADER,
     directTokenHeaders,
+    isOwnOrigin,
 } from './direct-fetch.js';
-export type { DirectFetch, DirectTokenSource } from './direct-fetch.js';
+export type { DirectFetch, DirectFetchOptions, DirectTokenSource } from './direct-fetch.js';
 export type { GraphqlErrorCode } from './graphql-error.js';
 export type {
     AppBridge,

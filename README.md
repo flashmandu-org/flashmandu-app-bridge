@@ -596,7 +596,7 @@ token, which only the iframe can mint (TOKEN_REFRESH). So:
 // Browser — every call that makes your server talk to the host:
 import { directFetch, directHeaders } from '@flashmandu/app-bridge/react';
 await directFetch(`/api/photos?profileId=${id}`, { method: 'POST', body });
-for (const [k, v] of Object.entries(await directHeaders())) xhr.setRequestHeader(k, v); // XHR uploads
+for (const [k, v] of Object.entries(await directHeaders(url))) xhr.setRequestHeader(k, v); // XHR uploads
 
 // Server route:
 import { HostClientError, hostClientErrorHeaders, hostClientFor, loadConfig } from '@flashmandu/app-bridge/server';
@@ -617,6 +617,14 @@ try {
   401, `direct_token_rejected` 401, `no_session` 401, `api_base_missing` 503,
   `host_unreachable` 502, `profile_mismatch` 403. It never falls back to the
   pod token.
+- The token goes ONLY to the app's own origin: `directFetch` / `directHeaders`
+  reject a cross-origin URL (absolute other host, `//host`, `/\\host`) before
+  minting anything.
+- MCP handlers: `verifiedHostClient(cfg, ctx.apiToken, ctx.profileId)` makes
+  the same `me()` check for the signed body's `api_token`.
+- `profile_mismatch` says only "The token does not belong to this store."; the
+  ids go to `console.warn`. `FlashmanduApiError` keeps `status` + the host's
+  `error` slug (`code`), never the response body: log those, not the body.
 - On `direct_token_rejected` answer with `hostClientErrorHeaders(err)`
   (`X-Flashmandu-Direct-Token-Rejected: 1`); `directFetch` re-mints once and
   retries.

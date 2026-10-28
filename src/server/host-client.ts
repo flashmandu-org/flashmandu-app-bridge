@@ -15,7 +15,7 @@
  *
  * NOT for work with no browser behind it (webhooks, MCP): those carry no
  * direct token. MCP calls get a short-lived `api_token` in their signed body;
- * build `createFlashmanduClient({ apiBase: cfg.apiBase, token })` from it.
+ * use `verifiedHostClient(cfg, token, signedProfileId)`, same checks.
  */
 
 import { DIRECT_TOKEN_HEADER, DIRECT_TOKEN_REJECTED_HEADER } from '../direct-fetch.js';
@@ -68,6 +68,37 @@ export interface HostClientForOptions {
 }
 
 /**
+ * The client for `token`, proven to act for `profileId`: `me()` must answer
+ * and its `profile_id` must equal it, else a {@link HostClientError}. Shared
+ * by {@link hostClientFor} (the browser's direct token) and MCP handlers (the
+ * signed body's `api_token`). The verified `me()` is cached on the client.
+ */
+export async function verifiedHostClient(cfg: AppConfig, token: string, profileId: number): Promise<VerifiedHostClient> {
+    if (token.trim() === '') {
+        throw new HostClientError('direct_token_missing', 401, 'No host token was supplied.');
+    }
+    if (cfg.apiBase === '') {
+        throw new HostClientError('api_base_missing', 503, 'FLASHMANDU_API_BASE is not set on this server.');
+    }
+    const client = createFlashmanduClient({ apiBase: cfg.apiBase, token: token.trim() });
+    let identity: HostIdentity;
+    try {
+        identity = await client.me();
+    } catch (cause) {
+        if (cause instanceof FlashmanduApiError && cause.status === 401) {
+            throw new HostClientError('direct_token_rejected', 401, 'The host rejected the token.', { cause });
+        }
+        throw new HostClientError('host_unreachable', 502, 'The host identity (me) could not be read.', { cause });
+    }
+    if (Number(identity.profile_id) !== profileId) {
+        // Ids in the log only; the error message is generic (0.6.6 review).
+        console.warn(`[app-bridge] host token profile ${String(identity.profile_id)} is not the session profile ${String(profileId)}`);
+        throw new HostClientError('profile_mismatch', 403, 'The token does not belong to this store.');
+    }
+    return { ...client, profileId, identity, me: async () => identity };
+}
+
+/**
  * Build the per-request host client, or throw a {@link HostClientError}. See
  * the module doc for the contract.
  */
@@ -83,25 +114,7 @@ export async function hostClientFor(req: Request, cfg: AppConfig, options: HostC
     if (profileId === undefined || !Number.isInteger(profileId) || profileId <= 0) {
         throw new HostClientError('no_session', 401, 'No session profile to check the direct token against.');
     }
-
-    const client = createFlashmanduClient({ apiBase: cfg.apiBase, token });
-    let identity: HostIdentity;
-    try {
-        identity = await client.me();
-    } catch (cause) {
-        if (cause instanceof FlashmanduApiError && cause.status === 401) {
-            throw new HostClientError('direct_token_rejected', 401, 'The host rejected the direct token.', { cause });
-        }
-        throw new HostClientError('host_unreachable', 502, 'The host identity (me) could not be read.', { cause });
-    }
-    if (Number(identity.profile_id) !== profileId) {
-        throw new HostClientError(
-            'profile_mismatch',
-            403,
-            `The direct token belongs to profile ${String(identity.profile_id)}, not ${String(profileId)}.`,
-        );
-    }
-    return { ...client, profileId, identity, me: async () => identity };
+    return verifiedHostClient(cfg, token, profileId);
 }
 
 /**

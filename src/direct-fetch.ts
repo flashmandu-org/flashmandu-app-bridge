@@ -37,6 +37,41 @@ export interface DirectTokenSource {
 
 export type DirectFetch = (url: string, init?: RequestInit) => Promise<Response>;
 
+export interface DirectFetchOptions {
+    /**
+     * The app's own origin. Default: `location.origin` in a browser, else null
+     * (then only path-relative URLs pass). The token is sent ONLY to it.
+     */
+    origin?: string | null;
+}
+
+function defaultOrigin(): string | null {
+    const loc = (globalThis as { location?: { origin?: string } }).location;
+    return typeof loc?.origin === 'string' && loc.origin !== 'null' ? loc.origin : null;
+}
+
+/**
+ * True when `url` targets the app's OWN origin. With no known origin only a
+ * path-relative URL qualifies: never a scheme, `//host` or `/\\host`.
+ */
+export function isOwnOrigin(url: string, origin: string | null = defaultOrigin()): boolean {
+    if (origin !== null) {
+        try {
+            const own = new URL(origin).origin;
+            return new URL(url, own).origin === own;
+        } catch {
+            return false;
+        }
+    }
+    return !/^[a-z][a-z0-9+.-]*:/i.test(url) && !/^[\\/]{2}/.test(url) && !/^\s/.test(url);
+}
+
+function assertOwnOrigin(url: string, origin: string | null): void {
+    if (!isOwnOrigin(url, origin)) {
+        throw new Error('The direct token is only sent to this app\'s own origin; use plain fetch for other hosts.');
+    }
+}
+
 /** The token, or null when the host cannot mint one (the server then refuses in its own words). */
 async function tokenOrNull(bridge: DirectTokenSource, force: boolean): Promise<string | null> {
     try {
@@ -66,9 +101,11 @@ function replayable(init: RequestInit): boolean {
  * Bind a `fetch` that carries the bridge's direct token. `fetchImpl` defaults
  * to the global `fetch` (a test seam otherwise).
  */
-export function createDirectFetch(bridge: DirectTokenSource, fetchImpl?: typeof fetch): DirectFetch {
+export function createDirectFetch(bridge: DirectTokenSource, fetchImpl?: typeof fetch, options: DirectFetchOptions = {}): DirectFetch {
     const send = (url: string, init: RequestInit): Promise<Response> => (fetchImpl ?? fetch)(url, init);
     return async (url, init = {}) => {
+        // Before any mint: a cross-origin URL never sees the token (it rejects).
+        assertOwnOrigin(url, options.origin === undefined ? defaultOrigin() : options.origin);
         const first = await send(url, withToken(init, await tokenOrNull(bridge, false)));
         if (first.status !== 401 || first.headers.get(DIRECT_TOKEN_REJECTED_HEADER) === null || !replayable(init)) {
             return first;
@@ -79,10 +116,16 @@ export function createDirectFetch(bridge: DirectTokenSource, fetchImpl?: typeof 
 
 /**
  * The header as a plain object, for a request directFetch cannot make — an
- * `XMLHttpRequest` upload that needs progress events. `{}` when the host
- * cannot mint a token.
+ * `XMLHttpRequest` upload that needs progress events. `url` is where it will
+ * be sent: a cross-origin URL rejects (the token only goes to the app's own
+ * origin). `{}` when the host cannot mint a token.
  */
-export async function directTokenHeaders(bridge: DirectTokenSource, options: { force?: boolean } = {}): Promise<Record<string, string>> {
+export async function directTokenHeaders(
+    bridge: DirectTokenSource,
+    url: string,
+    options: DirectFetchOptions & { force?: boolean } = {},
+): Promise<Record<string, string>> {
+    assertOwnOrigin(url, options.origin === undefined ? defaultOrigin() : options.origin);
     const token = await tokenOrNull(bridge, options.force === true);
     return token === null ? {} : { [DIRECT_TOKEN_HEADER]: token };
 }

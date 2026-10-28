@@ -17,9 +17,10 @@ export function directFetch(url: string, init?: RequestInit): Promise<Response> 
 
 /**
  * The direct-token header as an object, for an XMLHttpRequest (upload
- * progress). `{}` when none can be minted. `force` re-mints: use it for the
+ * progress) to `url`, which must be the app's own origin (else it rejects).
+ * `{}` when none can be minted. `force` re-mints: use it for the
  * one retry after a 401 carrying `X-Flashmandu-Direct-Token-Rejected`.
  */
-export function directHeaders(options: { force?: boolean } = {}): Promise<Record<string, string>> {
-    return directTokenHeaders(getBridge(), options);
+export function directHeaders(url: string, options: { force?: boolean } = {}): Promise<Record<string, string>> {
+    return directTokenHeaders(getBridge(), url, options);
 }
