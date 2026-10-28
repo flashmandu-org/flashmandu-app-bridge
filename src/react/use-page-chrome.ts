@@ -45,6 +45,8 @@ export interface PageChromeInput {
     actions?: PageChromeAction[];
     /** Whether the page has unsaved changes. */
     dirty?: boolean;
+    /** An in-app overlay (drawer) is open: the host dims its sidebar too. */
+    overlay?: boolean;
 }
 
 const EMPTY_CRUMBS: PageCrumb[] = [];
@@ -64,6 +66,7 @@ export function usePageChrome(input: PageChromeInput): void {
     const actions = input.actions ?? EMPTY_ACTIONS;
     const dirty = input.dirty === true;
     const title = input.title;
+    const overlay = input.overlay;
 
     // Refresh the id → handler map on every render, BEFORE any effect can fire.
     // A ref rather than state: the map is never rendered, and rebuilding it must
@@ -97,6 +100,7 @@ export function usePageChrome(input: PageChromeInput): void {
             dirty,
         };
         if (title !== undefined) payload.title = title;
+        if (overlay !== undefined) payload.overlay = overlay;
 
         lastSent.current = publishPageChrome(payload, lastSent.current, getBridge());
     });

@@ -231,8 +231,16 @@ export function normalisePageChrome(input: SetPagePayload): SetPagePayload {
         return out;
     });
 
+    // `overlay` is optional, but a non-boolean would make the host guess
+    // whether to dim its sidebar, so it fails here like `dirty` does.
+    assert(
+        input.overlay === undefined || typeof input.overlay === 'boolean',
+        'SET_PAGE: `overlay` must be a boolean when present.',
+    );
+
     const payload: SetPagePayload = { crumbs, actions, dirty: input.dirty };
     if (title !== undefined) payload.title = title;
+    if (input.overlay !== undefined) payload.overlay = input.overlay;
     return payload;
 }
 
@@ -247,6 +255,7 @@ export function pageChromeEquals(a: SetPagePayload | null, b: SetPagePayload | n
     if (a === null || b === null) return a === b;
     if (a.title !== b.title) return false;
     if (a.dirty !== b.dirty) return false;
+    if (a.overlay !== b.overlay) return false;
     if (a.crumbs.length !== b.crumbs.length) return false;
     if (a.actions.length !== b.actions.length) return false;
 

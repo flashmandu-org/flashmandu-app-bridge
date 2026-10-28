@@ -347,6 +347,12 @@ export interface SetPagePayload {
     actions: PageAction[];
     /** Flips the host's command-bar dirty state (hides ⌘K, shows Save/Discard). */
     dirty: boolean;
+    /**
+     * An in-app overlay (the kit's right `Drawer`) is open: the host dims its
+     * own chrome (the left sidebar) to match the frame's scrim. Optional;
+     * send `false` on close. 0.6.3.
+     */
+    overlay?: boolean;
 }
 
 /** ACTION payload (parent → iframe). */
