@@ -34,3 +34,22 @@ describe('loadConfig', () => {
         expect(cfg.devBoxBaseUrl).toBe('');
     });
 });
+
+describe('loadConfig apiBase (0.6.6)', () => {
+    it('reads FLASHMANDU_API_BASE, the variable the platform sets on the pod', () => {
+        const cfg = loadConfig({
+            FLASHMANDU_API_BASE: 'https://app.example.com/',
+            FLASHMANDU_DEV_BOX_BASE_URL: 'https://dev.example',
+        } as NodeJS.ProcessEnv);
+        expect(cfg.apiBase).toBe('https://app.example.com');
+    });
+
+    it('falls back to FLASHMANDU_DEV_BOX_BASE_URL for local dev', () => {
+        const cfg = loadConfig({ FLASHMANDU_DEV_BOX_BASE_URL: 'https://dev.example/' } as NodeJS.ProcessEnv);
+        expect(cfg.apiBase).toBe('https://dev.example');
+    });
+
+    it('is empty (never a guessed host) when neither is set', () => {
+        expect(loadConfig({} as NodeJS.ProcessEnv).apiBase).toBe('');
+    });
+});
