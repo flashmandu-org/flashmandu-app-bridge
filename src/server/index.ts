@@ -8,8 +8,23 @@
 export { loadConfig } from './config.js';
 export type { AppConfig } from './config.js';
 
-export { createFlashmanduClient } from './flashmandu.js';
-export type { FlashmanduClient, FlashmanduClientOptions } from './flashmandu.js';
+export {
+    createFlashmanduClient,
+    FlashmanduMediaError,
+    MediaInvalidError,
+    MediaQuotaError,
+    MediaScopeError,
+    MediaTooLargeError,
+} from './flashmandu.js';
+export type {
+    FlashmanduClient,
+    FlashmanduClientOptions,
+    FlashmanduMediaClient,
+    MediaErrorCode,
+    MediaUploadBody,
+    MediaUploadOptions,
+    UploadedMedia,
+} from './flashmandu.js';
 
 export { revalidateProfile } from './revalidate.js';
 

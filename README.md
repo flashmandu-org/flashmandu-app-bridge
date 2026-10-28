@@ -555,6 +555,33 @@ interface AppBridge {
 }
 ```
 
+### `@flashmandu/app-bridge/server` — Media Library writes (0.6.4)
+
+Apps store their files in the merchant's Media Library (same profile, same
+quota, one library across every app), never in their own bucket. Needs the
+`write:media` scope in the app's manifest.
+
+```ts
+import { createFlashmanduClient, loadConfig, MediaQuotaError, MediaScopeError } from '@flashmandu/app-bridge/server';
+
+const cfg = loadConfig();
+const client = createFlashmanduClient({ apiBase: cfg.devBoxBaseUrl, token: cfg.apiToken });
+
+const item = await client.media.upload(buffer, { filename: 'pano.jpg', collection: 'tours', alt: 'Lobby' });
+// → { id, url, filename, mimeType, size, collection }
+await client.media.delete(item.id); // only items this app added
+```
+
+| HTTP | Error class           | `code`           | Meaning                                         |
+| ---- | --------------------- | ---------------- | ----------------------------------------------- |
+| 403  | `MediaScopeError`     | `scope_denied`   | `write:media` not granted (merchant must approve) |
+| 413  | `MediaTooLargeError`  | `too_large`      | over the platform's per-file limit (message names it) |
+| 422  | `MediaInvalidError`   | `invalid`        | the host refused the file or a field            |
+| 507  | `MediaQuotaError`     | `quota_exceeded` | the profile's media storage is full             |
+
+All extend `FlashmanduMediaError` (`code`, `status`, `serverCode`); any other
+status is `code: 'http'`, a failed fetch is `code: 'network'`.
+
 ### `@flashmandu/app-bridge/modal` — host modal + resource picker
 
 A separate entry so an app that never opens a modal ships none of it.
