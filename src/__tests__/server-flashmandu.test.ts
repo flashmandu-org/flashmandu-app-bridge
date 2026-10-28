@@ -138,6 +138,28 @@ describe('createFlashmanduClient().media', () => {
         expect(form.has('alt')).toBe(false);
     });
 
+    it('sends visibility when given (public items carry a url)', async () => {
+        const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
+            new Response(JSON.stringify(created), { status: 201 }),
+        );
+        vi.stubGlobal('fetch', fetchMock);
+        const client = createFlashmanduClient({ apiBase: 'https://dev.example', token: 'tok' });
+        await client.media.upload(Buffer.from([1]), { filename: 'p.jpg', visibility: 'public' });
+        expect((fetchMock.mock.calls[0]![1]?.body as FormData).get('visibility')).toBe('public');
+    });
+
+    it('leaves visibility unset by default so the host default (private) applies, and a private item resolves with url null', async () => {
+        const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
+            new Response(JSON.stringify({ ...created, url: null }), { status: 201 }),
+        );
+        vi.stubGlobal('fetch', fetchMock);
+        const client = createFlashmanduClient({ apiBase: 'https://dev.example', token: 'tok' });
+        const item = await client.media.upload(Buffer.from([1]), { filename: 'p.jpg' });
+        expect((fetchMock.mock.calls[0]![1]?.body as FormData).has('visibility')).toBe(false);
+        expect(item.url).toBeNull();
+        expect(item.id).toBe(77);
+    });
+
     it('requires a filename', async () => {
         const client = createFlashmanduClient({ apiBase: 'https://dev.example', token: 'tok' });
         await expect(client.media.upload(Buffer.from([1]), { filename: '' })).rejects.toThrow(/filename/);
