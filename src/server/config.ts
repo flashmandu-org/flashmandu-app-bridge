@@ -30,6 +30,13 @@ export interface AppConfig {
     /** Dev-box base URL (never a production host). */
     devBoxBaseUrl: string;
     /**
+     * The host API base every server call should use (0.6.6). On a platform
+     * pod it is `FLASHMANDU_API_BASE` (the platform sets it); in local dev it
+     * falls back to `FLASHMANDU_DEV_BOX_BASE_URL`. `''` when neither is set:
+     * never a guessed host. Trailing slashes are stripped.
+     */
+    apiBase: string;
+    /**
      * HMAC secret the platform signs storefront embed tokens with. Sourced
      * from the delivered `webhook_secret` (same value as `webhookSecret`,
      * exposed under the name the token verifier expects).
@@ -87,6 +94,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     const apiToken = resolve(env, 'FLASHMANDU_API_TOKEN') ?? '';
     const webhookSecret = resolve(env, 'FLASHMANDU_WEBHOOK_SECRET') ?? '';
     const devBoxBaseUrl = (resolve(env, 'FLASHMANDU_DEV_BOX_BASE_URL') ?? '').replace(/\/+$/, '');
+    const apiBase = (env.FLASHMANDU_API_BASE ?? '').replace(/\/+$/, '') || devBoxBaseUrl;
 
     let memoizedSecret: string | null = null;
 
@@ -106,5 +114,5 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         return memoizedSecret;
     }
 
-    return { apiToken, webhookSecret, devBoxBaseUrl, appSecret };
+    return { apiToken, webhookSecret, devBoxBaseUrl, apiBase, appSecret };
 }

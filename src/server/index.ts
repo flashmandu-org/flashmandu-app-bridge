@@ -10,6 +10,7 @@ export type { AppConfig } from './config.js';
 
 export {
     createFlashmanduClient,
+    FlashmanduApiError,
     FlashmanduMediaError,
     MediaInvalidError,
     MediaQuotaError,
@@ -25,6 +26,10 @@ export type {
     MediaUploadOptions,
     UploadedMedia,
 } from './flashmandu.js';
+
+export { HostClientError, hostClientErrorHeaders, hostClientFor } from './host-client.js';
+export type { HostClientErrorCode, HostClientForOptions, HostIdentity, VerifiedHostClient } from './host-client.js';
+export { DIRECT_TOKEN_HEADER, DIRECT_TOKEN_REJECTED_HEADER } from '../direct-fetch.js';
 
 export { revalidateProfile } from './revalidate.js';
 

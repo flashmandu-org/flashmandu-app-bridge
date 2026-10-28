@@ -43,6 +43,13 @@ export {
     TOKEN_FRESHNESS_MARGIN_MS,
 } from './app-bridge.js';
 export { BridgeGraphqlError, classifyDirectApiFailure } from './graphql-error.js';
+export {
+    createDirectFetch,
+    DIRECT_TOKEN_HEADER,
+    DIRECT_TOKEN_REJECTED_HEADER,
+    directTokenHeaders,
+} from './direct-fetch.js';
+export type { DirectFetch, DirectTokenSource } from './direct-fetch.js';
 export type { GraphqlErrorCode } from './graphql-error.js';
 export type {
     AppBridge,

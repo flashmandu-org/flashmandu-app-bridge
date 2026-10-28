@@ -562,10 +562,11 @@ quota, one library across every app), never in their own bucket. Needs the
 `write:media` scope in the app's manifest.
 
 ```ts
-import { createFlashmanduClient, loadConfig, MediaQuotaError, MediaScopeError } from '@flashmandu/app-bridge/server';
+import { hostClientFor, loadConfig, MediaQuotaError, MediaScopeError } from '@flashmandu/app-bridge/server';
 
 const cfg = loadConfig();
-const client = createFlashmanduClient({ apiBase: cfg.devBoxBaseUrl, token: cfg.apiToken });
+// Per request: the browser's direct token for THIS store, profile-checked (0.6.6).
+const client = await hostClientFor(req, cfg);
 
 const item = await client.media.upload(buffer, { filename: 'pano.jpg', collection: 'tours', alt: 'Lobby', visibility: 'public' });
 // → { id, url, filename, mimeType, size, collection }  (url is null for a private item;
@@ -584,6 +585,45 @@ All extend `FlashmanduMediaError` (`code`, `status`, `serverCode`); any other
 status is `code: 'http'`, a failed fetch is `code: 'network'`. The host's
 `message` is for logs; show merchants your own copy keyed on `code` /
 `serverCode`.
+
+### Acting for the store: `directFetch` + `hostClientFor` (0.6.6)
+
+A pod's `FLASHMANDU_API_TOKEN` is minted for ONE install and is short-lived,
+so it cannot act for each store. The per-install token is the host's DIRECT
+token, which only the iframe can mint (TOKEN_REFRESH). So:
+
+```ts
+// Browser — every call that makes your server talk to the host:
+import { directFetch, directHeaders } from '@flashmandu/app-bridge/react';
+await directFetch(`/api/photos?profileId=${id}`, { method: 'POST', body });
+for (const [k, v] of Object.entries(await directHeaders())) xhr.setRequestHeader(k, v); // XHR uploads
+
+// Server route:
+import { HostClientError, hostClientErrorHeaders, hostClientFor, loadConfig } from '@flashmandu/app-bridge/server';
+try {
+  const host = await hostClientFor(req, loadConfig()); // me().profile_id === session profile, else throws
+  await host.media.upload(file, { filename, visibility: 'public' });
+} catch (err) {
+  if (err instanceof HostClientError) {
+    return Response.json({ error: 'Your copy here' }, { status: err.status, headers: hostClientErrorHeaders(err) });
+  }
+  throw err;
+}
+```
+
+- Header `X-Flashmandu-Direct-Token` carries the token; the server uses it as
+  the Bearer for `/api/apps/me`, `/api/apps/media` and `/api/apps/graphql`.
+- `hostClientFor` fails CLOSED (`HostClientError.code`): `direct_token_missing`
+  401, `direct_token_rejected` 401, `no_session` 401, `api_base_missing` 503,
+  `host_unreachable` 502, `profile_mismatch` 403. It never falls back to the
+  pod token.
+- On `direct_token_rejected` answer with `hostClientErrorHeaders(err)`
+  (`X-Flashmandu-Direct-Token-Rejected: 1`); `directFetch` re-mints once and
+  retries.
+- `loadConfig().apiBase` is `FLASHMANDU_API_BASE` (set on the pod), else
+  `FLASHMANDU_DEV_BOX_BASE_URL`. Use it, not `devBoxBaseUrl`, for host calls.
+- No browser behind the call (webhooks, MCP) means no direct token: MCP bodies
+  carry a short-lived `api_token`; webhooks keep the pod token and its limits.
 
 ### `@flashmandu/app-bridge/modal` — host modal + resource picker
 

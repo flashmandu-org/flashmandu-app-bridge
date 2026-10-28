@@ -18,4 +18,4 @@ export type { UrlSyncProps } from './url-sync.js';
 // re-exports the same symbols as its own module (ported from the app
 // template's `lib/use-profile.ts`) for anyone importing that path directly.
 export { hostBridge, confirmDestructive, pickMedia, chooseMedia } from './host-dialogs.js';
-export type { ConfirmInput, MediaPick } from './host-dialogs.js';
+export type { ConfirmInput, MediaPick } from './host-dialogs.js';export { directFetch, directHeaders } from './direct-fetch.js';

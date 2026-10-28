@@ -163,6 +163,21 @@ export class MediaQuotaError extends FlashmanduMediaError {
     }
 }
 
+/**
+ * A non-2xx answer from `me()` / `hooks()` / `graphql()` (0.6.6). Same
+ * message as before (it is still an `Error`); `status` lets a caller tell a
+ * rejected token (401) from an unreachable host without parsing the text.
+ */
+export class FlashmanduApiError extends Error {
+    readonly status: number;
+
+    constructor(status: number, message: string) {
+        super(message);
+        this.name = 'FlashmanduApiError';
+        this.status = status;
+    }
+}
+
 export interface FlashmanduClient {
     graphql<T>(query: string, variables?: Record<string, unknown>): Promise<T>;
     /** Media Library writes (0.6.4). Needs the `write:media` scope. */
@@ -193,7 +208,7 @@ async function request<T>(opts: FlashmanduClientOptions, p: string, init: Reques
     });
     if (!res.ok) {
         const text = await res.text().catch(() => '');
-        throw new Error(`Flashmandu API ${res.status} ${res.statusText}: ${text}`);
+        throw new FlashmanduApiError(res.status, `Flashmandu API ${res.status} ${res.statusText}: ${text}`);
     }
     if (res.status === 204) {
         return undefined as T;

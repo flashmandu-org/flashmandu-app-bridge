@@ -250,6 +250,16 @@ export interface AppBridge {
      */
     getSessionToken: () => Promise<string>;
     /**
+     * The host-minted DIRECT token (0.6.6) — never the embed-URL session
+     * token. Minted through TOKEN_REFRESH on first use and cached while fresh;
+     * concurrent callers share one refresh. `force` re-mints (after the server
+     * reported the token rejected). Rejects when the host cannot mint.
+     *
+     * Apps rarely call this directly: `directFetch` (`@flashmandu/app-bridge/react`,
+     * or `createDirectFetch(bridge)`) carries it to the app's own server.
+     */
+    getDirectToken: (options?: { force?: boolean }) => Promise<string>;
+    /**
      * Call the REST proxy at `/api/apps/proxy` over postMessage. The host
      * authenticates server-side under the merchant's session.
      */
@@ -1361,6 +1371,7 @@ export function createAppBridge(opts: CreateAppBridgeOptions = {}): AppBridge {
             };
         },
         getSessionToken,
+        getDirectToken: (options = {}) => getDirectApiToken(options.force === true),
         request(input: RequestOptions): Promise<ResponseResult> {
             if (destroyed) {
                 return Promise.reject(new Error('App bridge has been destroyed.'));

@@ -30,11 +30,13 @@ import type { AppConfig } from './config.js';
 export async function revalidateProfile(cfg: AppConfig, profileId?: number): Promise<void> {
     try {
         const apiToken = cfg.apiToken;
-        const devBoxBaseUrl = cfg.devBoxBaseUrl;
+        // 0.6.6: `apiBase` (FLASHMANDU_API_BASE on a pod, the dev-box URL in
+        // local dev). Before it, a pod had no dev-box URL and this never fired.
+        const apiBase = cfg.apiBase;
 
-        if (devBoxBaseUrl === '') return;
+        if (apiBase === '') return;
 
-        await fetch(`${devBoxBaseUrl}/api/apps/embed/revalidate`, {
+        await fetch(`${apiBase}/api/apps/embed/revalidate`, {
             method: 'POST',
             headers: {
                 Authorization: `Bearer ${apiToken}`,
