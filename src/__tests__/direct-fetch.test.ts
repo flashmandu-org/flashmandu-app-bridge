@@ -106,7 +106,7 @@ describe('directFetch', () => {
         host = createMockHost({ token: 'tok_boot' });
         const bridge = host.createBridge({ schedule: never });
         await bridge.ready();
-        await expect(directTokenHeaders(bridge)).resolves.toEqual({ [DIRECT_TOKEN_HEADER]: 'tok_refreshed_1' });
+        await expect(directTokenHeaders(bridge, '/api/upload')).resolves.toEqual({ [DIRECT_TOKEN_HEADER]: 'tok_refreshed_1' });
     });
 });
 
@@ -118,7 +118,58 @@ describe('react directFetch / directHeaders (shared singleton)', () => {
         const react = await import('../react/index.js');
         expect(typeof react.directFetch).toBe('function');
         expect(typeof react.directHeaders).toBe('function');
-        await expect(directTokenHeaders(bridge)).resolves.toEqual({ [DIRECT_TOKEN_HEADER]: 'tok_refreshed_1' });
-        await expect(directTokenHeaders(bridge, { force: true })).resolves.toEqual({ [DIRECT_TOKEN_HEADER]: 'tok_refreshed_2' });
+        await expect(directTokenHeaders(bridge, '/api/upload')).resolves.toEqual({ [DIRECT_TOKEN_HEADER]: 'tok_refreshed_1' });
+        await expect(directTokenHeaders(bridge, '/api/upload', { force: true })).resolves.toEqual({ [DIRECT_TOKEN_HEADER]: 'tok_refreshed_2' });
+    });
+});
+
+describe('the direct token never leaves the app origin (send-back 2 #1)', () => {
+    const ORIGIN = 'https://tours.apps.example';
+    const crossOrigin = [
+        'https://evil.example/api/x',
+        '//evil.example/api/x',
+        '/\\evil.example/api/x',
+        'http://tours.apps.example/api/x',
+        'https://tours.apps.example:8443/api/x',
+        'javascript:alert(1)',
+    ];
+
+    it('directFetch attaches it for relative and same-origin URLs', async () => {
+        host = createMockHost({ token: 'tok_boot' });
+        const bridge = host.createBridge({ schedule: never });
+        await bridge.ready();
+        const fetchImpl = vi.fn(async () => new Response('{}', { status: 200 }));
+        const df = createDirectFetch(bridge, fetchImpl, { origin: ORIGIN });
+        await df('/api/x');
+        await df('api/x?y=1');
+        await df(`${ORIGIN}/api/x`);
+        expect(fetchImpl.mock.calls.map((c) => headerOf(c[1] as RequestInit))).toEqual(['tok_refreshed_1', 'tok_refreshed_1', 'tok_refreshed_1']);
+    });
+
+    it.each(crossOrigin)('directFetch refuses %s without minting or sending anything', async (url) => {
+        host = createMockHost({ token: 'tok_boot' });
+        const bridge = host.createBridge({ schedule: never });
+        await bridge.ready();
+        const fetchImpl = vi.fn(async () => new Response('{}', { status: 200 }));
+        await expect(createDirectFetch(bridge, fetchImpl, { origin: ORIGIN })(url)).rejects.toThrow(/own origin/);
+        expect(fetchImpl).not.toHaveBeenCalled();
+        expect(host.tokenRefreshCount()).toBe(0);
+    });
+
+    it.each(crossOrigin)('directTokenHeaders (XHR) refuses %s', async (url) => {
+        host = createMockHost({ token: 'tok_boot' });
+        const bridge = host.createBridge({ schedule: never });
+        await bridge.ready();
+        await expect(directTokenHeaders(bridge, url, { origin: ORIGIN })).rejects.toThrow(/own origin/);
+        expect(host.tokenRefreshCount()).toBe(0);
+    });
+
+    it('with no known origin only path-relative URLs pass', async () => {
+        host = createMockHost({ token: 'tok_boot' });
+        const bridge = host.createBridge({ schedule: never });
+        await bridge.ready();
+        await expect(directTokenHeaders(bridge, '/api/x', { origin: null })).resolves.toEqual({ [DIRECT_TOKEN_HEADER]: 'tok_refreshed_1' });
+        await expect(directTokenHeaders(bridge, 'https://tours.apps.example/api/x', { origin: null })).rejects.toThrow(/own origin/);
+        await expect(directTokenHeaders(bridge, '//evil.example/x', { origin: null })).rejects.toThrow(/own origin/);
     });
 });

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { loadConfig } from '../server/config.js';
-import { HostClientError, hostClientErrorHeaders, hostClientFor } from '../server/host-client.js';
+import { HostClientError, hostClientErrorHeaders, hostClientFor, verifiedHostClient } from '../server/host-client.js';
+import { FlashmanduApiError } from '../server/flashmandu.js';
 import { DIRECT_TOKEN_HEADER, DIRECT_TOKEN_REJECTED_HEADER } from '../direct-fetch.js';
 
 /**
@@ -75,11 +76,49 @@ describe('hostClientFor', () => {
         expect(hostClientErrorHeaders(err as HostClientError)).toEqual({});
     });
 
-    it('refuses with 403 when the token belongs to another profile', async () => {
+    it('refuses with 403 when the token belongs to another profile; the message names no ids (they go to the log only)', async () => {
         vi.stubGlobal('fetch', vi.fn(async () => meResponse(8)));
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
         const err = await hostClientFor(req({ [DIRECT_TOKEN_HEADER]: 'direct_8' }), cfg).catch((e: unknown) => e);
-        expect(err).toMatchObject({ code: 'profile_mismatch', status: 403 });
+        expect(err).toMatchObject({ code: 'profile_mismatch', status: 403, message: 'The token does not belong to this store.' });
+        expect((err as Error).message).not.toMatch(/\d/);
+        expect(warn).toHaveBeenCalledWith(expect.stringMatching(/token profile 8 .*session profile 7/));
+        warn.mockRestore();
     });
+
+    it('a host error keeps status + code but never the host body (send-back 2 #5)', async () => {
+        vi.stubGlobal('fetch', vi.fn(async () => new Response('{"error":"invalid_token","message":"secret detail <html>"}', { status: 401, statusText: 'Unauthorized' })));
+        const err = await hostClientFor(req({ [DIRECT_TOKEN_HEADER]: 'stale' }), cfg).catch((e: unknown) => e);
+        const cause = (err as { cause: FlashmanduApiError }).cause;
+        expect(cause).toBeInstanceOf(FlashmanduApiError);
+        expect(cause).toMatchObject({ status: 401, code: 'invalid_token' });
+        expect(cause.message).not.toMatch(/secret detail|<html>/);
+        expect(JSON.stringify(cause)).not.toMatch(/secret detail/);
+    });
+});
+
+describe('verifiedHostClient (any token: MCP api_token, direct token)', () => {
+    it('returns a client proven to act for the profile, me() cached', async () => {
+        const fetchMock = vi.fn(async () => meResponse(7));
+        vi.stubGlobal('fetch', fetchMock);
+        const client = await verifiedHostClient(cfg, 'install_7', 7);
+        expect(client.profileId).toBe(7);
+        await client.me();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].headers).toMatchObject({ Authorization: 'Bearer install_7' });
+    });
+
+    it('fails closed on mismatch, unreachable, a rejected token and an empty token', async () => {
+        vi.stubGlobal('fetch', vi.fn(async () => meResponse(8)));
+        vi.spyOn(console, 'warn').mockImplementation(() => {});
+        await expect(verifiedHostClient(cfg, 't', 7)).rejects.toMatchObject({ code: 'profile_mismatch', status: 403 });
+        vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('fetch failed'); }));
+        await expect(verifiedHostClient(cfg, 't', 7)).rejects.toMatchObject({ code: 'host_unreachable', status: 502 });
+        vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 401 })));
+        await expect(verifiedHostClient(cfg, 't', 7)).rejects.toMatchObject({ code: 'direct_token_rejected', status: 401 });
+        await expect(verifiedHostClient(cfg, '', 7)).rejects.toMatchObject({ code: 'direct_token_missing', status: 401 });
+    });
+
 
     it('checks against an explicit profileId when the caller already resolved one', async () => {
         vi.stubGlobal('fetch', vi.fn(async () => meResponse(7)));
