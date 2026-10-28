@@ -30,13 +30,16 @@ import type { AppConfig } from './config.js';
 export async function revalidateProfile(cfg: AppConfig, profileId?: number): Promise<void> {
     try {
         const apiToken = cfg.apiToken;
-        // 0.6.6: `apiBase` (FLASHMANDU_API_BASE on a pod, the dev-box URL in
-        // local dev). Before it, a pod had no dev-box URL and this never fired.
-        const apiBase = cfg.apiBase;
+        // DEV-BOX ONLY, deliberately not `apiBase` (0.6.6 review): this sends
+        // the POD token, which is minted for ONE install. On a platform pod
+        // that would be a host call for every store on another store's
+        // credential, so it stays a no-op there until the host accepts a
+        // per-install token on this endpoint.
+        const devBoxBaseUrl = cfg.devBoxBaseUrl;
 
-        if (apiBase === '') return;
+        if (devBoxBaseUrl === '') return;
 
-        await fetch(`${apiBase}/api/apps/embed/revalidate`, {
+        await fetch(`${devBoxBaseUrl}/api/apps/embed/revalidate`, {
             method: 'POST',
             headers: {
                 Authorization: `Bearer ${apiToken}`,

@@ -46,17 +46,17 @@ describe('revalidateProfile', () => {
         );
     });
 
-    it('uses FLASHMANDU_API_BASE on a platform pod (no dev-box URL there)', async () => {
+    it('never fires on a platform pod (FLASHMANDU_API_BASE only): the pod token is one install, not every store', async () => {
         const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
         vi.stubGlobal('fetch', fetchMock);
 
         const cfg = loadConfig({ FLASHMANDU_API_TOKEN: 'tok', FLASHMANDU_API_BASE: 'https://app.example.com' } as NodeJS.ProcessEnv);
         await revalidateProfile(cfg, 42);
 
-        expect(fetchMock).toHaveBeenCalledWith('https://app.example.com/api/apps/embed/revalidate', expect.anything());
+        expect(fetchMock).not.toHaveBeenCalled();
     });
 
-    it('is a no-op when no api base is set', async () => {
+    it('is a no-op when devBoxBaseUrl is unset', async () => {
         const fetchMock = vi.fn();
         vi.stubGlobal('fetch', fetchMock);
 
