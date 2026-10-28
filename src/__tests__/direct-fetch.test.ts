@@ -109,3 +109,16 @@ describe('directFetch', () => {
         await expect(directTokenHeaders(bridge)).resolves.toEqual({ [DIRECT_TOKEN_HEADER]: 'tok_refreshed_1' });
     });
 });
+
+describe('react directFetch / directHeaders (shared singleton)', () => {
+    it('are exported from the react entry and directHeaders forwards force', async () => {
+        host = createMockHost({ token: 'tok_boot' });
+        const bridge = host.createBridge({ schedule: never });
+        await bridge.ready();
+        const react = await import('../react/index.js');
+        expect(typeof react.directFetch).toBe('function');
+        expect(typeof react.directHeaders).toBe('function');
+        await expect(directTokenHeaders(bridge)).resolves.toEqual({ [DIRECT_TOKEN_HEADER]: 'tok_refreshed_1' });
+        await expect(directTokenHeaders(bridge, { force: true })).resolves.toEqual({ [DIRECT_TOKEN_HEADER]: 'tok_refreshed_2' });
+    });
+});

@@ -15,7 +15,11 @@ export function directFetch(url: string, init?: RequestInit): Promise<Response> 
     return createDirectFetch(getBridge())(url, init);
 }
 
-/** The direct-token header as an object, for an XMLHttpRequest (upload progress). `{}` when none can be minted. */
-export function directHeaders(): Promise<Record<string, string>> {
-    return directTokenHeaders(getBridge());
+/**
+ * The direct-token header as an object, for an XMLHttpRequest (upload
+ * progress). `{}` when none can be minted. `force` re-mints: use it for the
+ * one retry after a 401 carrying `X-Flashmandu-Direct-Token-Rejected`.
+ */
+export function directHeaders(options: { force?: boolean } = {}): Promise<Record<string, string>> {
+    return directTokenHeaders(getBridge(), options);
 }
